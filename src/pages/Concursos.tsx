@@ -1,11 +1,17 @@
-// src/pages/Concursos.tsx
-import { useMemo, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
 
-/* ---------------- Tipos + Mock (quitar cuando conectes backend) ---------------- */
+// ⬇️ IMPORTA db DESDE TU CONFIG DE FIREBASE
+import { db } from "../servicios/firebaseConfig.ts"
+
+
+// Firebase Firestore
+import { collection, onSnapshot, query, orderBy, Timestamp } from "firebase/firestore"
+import type { DocumentData } from "firebase/firestore"
+/* ---------------- Tipos ---------------- */
 export type EstadoConcurso = "Activo" | "Próximo" | "Finalizado"
 
 export type Concurso = {
@@ -21,44 +27,30 @@ export type Concurso = {
   portadaUrl?: string
 }
 
-const concursosMock: Concurso[] = [
-  {
-    id: "bd2025",
-    nombre: "Concurso de Bases de Datos",
-    categoria: "Bases de Datos",
-    sede: "Laboratorio de TI",
-    fechaInicio: "2025-11-22",
-    fechaFin: "2025-11-22",
-    estatus: "Activo",
-    participantesActual: 18,
-    participantesMax: 25,
-  },
-  {
-    id: "prog2025",
-    nombre: "Hackathon de Programación",
-    categoria: "Programación",
-    sede: "Auditorio Principal",
-    fechaInicio: "2025-12-05",
-    fechaFin: "2025-12-06",
-    estatus: "Próximo",
-    participantesActual: 9,
-    participantesMax: 30,
-  },
-  {
-    id: "robot2025",
-    nombre: "Torneo de Robótica",
-    categoria: "Robótica",
-    sede: "Gimnasio Tech",
-    fechaInicio: "2025-10-08",
-    fechaFin: "2025-10-09",
-    estatus: "Finalizado",
-    participantesActual: 28,
-    participantesMax: 28,
-  },
-]
-/* ------------------------------------------------------------------------------- */
+/* ---------------- Utilidades ---------------- */
+const toISO = (v: unknown): string => {
+  // Soporta Timestamp de Firestore, Date o string.
+  try {
+    if (!v) return ""
+    if (v instanceof Timestamp) return v.toDate().toISOString().slice(0, 10)
+    if (v instanceof Date) return v.toISOString().slice(0, 10)
+    const s = String(v)
+    // si ya viene como "YYYY-MM-DD" o ISO, lo regresamos tal cual (solo fecha)
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+    const d = new Date(s)
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  } catch {}
+  return ""
+}
 
-const TABS: Array<EstadoConcurso | "Todos"> = ["Todos", "Activo", "Próximo", "Finalizado"]
+const safeEstado = (v: unknown): EstadoConcurso => {
+  const s = String(v || "").toLowerCase()
+  if (s === "activo") return "Activo"
+  if (s === "próximo" || s === "proximo") return "Próximo"
+  if (s === "finalizado" || s === "cerrado") return "Finalizado"
+  // Heurística: si la fecha fin ya pasó → Finalizado; si la inicio es futura → Próximo; si no → Activo
+  return "Activo"
+}
 
 function Chip({
   children,
@@ -90,7 +82,6 @@ function BarraProgreso({ actual, total }: { actual: number; total: number }) {
   )
 }
 
-/* ---------- Menú contextual sencillo (tres puntos) ---------- */
 function DotsMenu({
   onEdit,
   onDuplicate,
@@ -155,7 +146,7 @@ function TarjetaConcurso({ c }: { c: Concurso }) {
         <div className="flex items-start gap-4">
           {/* Marca/Iniciales */}
           <div className="h-14 w-14 rounded-xl bg-tecnm-azul/10 grid place-items-center text-tecnm-azul font-bold shrink-0">
-            {c.categoria.slice(0, 2).toUpperCase()}
+            {c.categoria?.slice(0, 2)?.toUpperCase() || "CO"}
           </div>
 
           {/* Contenido */}
@@ -164,14 +155,14 @@ function TarjetaConcurso({ c }: { c: Concurso }) {
             <div className="flex items-start gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-semibold truncate">{c.nombre}</h3>
+                  <h3 className="font-semibold truncate">{c.nombre || "Concurso"}</h3>
                   <Chip tone={tone}>{c.estatus}</Chip>
                 </div>
                 <p className="text-sm text-gray-600 truncate">
-                  {c.categoria} · {c.sede}
+                  {c.categoria || "Categoría"} · {c.sede || "Sede"}
                 </p>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  {new Date(c.fechaInicio).toLocaleDateString()} — {new Date(c.fechaFin).toLocaleDateString()}
+                  {c.fechaInicio ? new Date(c.fechaInicio).toLocaleDateString() : "—"} — {c.fechaFin ? new Date(c.fechaFin).toLocaleDateString() : "—"}
                 </p>
               </div>
 
@@ -209,14 +200,89 @@ export default function Concursos() {
   const [tab, setTab] = useState<EstadoConcurso | "Todos">("Todos")
   const [categoria, setCategoria] = useState<string>("Todas")
 
-  const categorias: string[] = useMemo(() => {
-    const set = new Set<string>(concursosMock.map((c) => c.categoria))
-    return ["Todas", ...Array.from(set)]
+  // NUEVO: estado con datos de Firestore
+  const [concursos, setConcursos] = useState<Concurso[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Suscripción en tiempo real a la colección "Cursos"
+  useEffect(() => {
+    try {
+      const ref = collection(db, "Cursos")
+      // Ordena si tienes un campo fechaInicio/creadoEn; si no, Firestore ignora el orderBy
+      const q = query(ref, orderBy("fechaInicio", "desc"))
+      const unsub = onSnapshot(
+        q,
+        (snap) => {
+          const rows: Concurso[] = snap.docs.map((d) => {
+            const data: DocumentData = d.data() || {}
+
+            // Intentamos mapear nombres posibles de tus campos
+            const nombre = (data.nombre || data.titulo || data.curso || d.id) as string
+            const categoria = (data.categoria || "General") as string
+            const sede = (data.sede || data.lugar || "Por definir") as string
+
+            const fechaInicio = toISO(data.fechaInicio || data.inicio || data.constancia?.actualizadoEn)
+            const fechaFin = toISO(data.fechaFin || data.fin || data.constancia?.actualizadoEn)
+
+            const participantesActual = Number(data.participantesActual ?? data.inscritos ?? 0)
+            const participantesMax = Number(data.participantesMax ?? data.capacidad ?? 30)
+
+            const estatus: EstadoConcurso =
+              (data.estatus && safeEstado(data.estatus)) ||
+              // heurística rápida por fechas
+              (() => {
+                const hoy = new Date()
+                const ini = fechaInicio ? new Date(fechaInicio) : null
+                const fin = fechaFin ? new Date(fechaFin) : null
+                if (fin && fin < hoy) return "Finalizado"
+                if (ini && ini > hoy) return "Próximo"
+                return "Activo"
+              })()
+
+            const portadaUrl = (data.portadaUrl || data.plantilla?.url || "") as string
+
+            return {
+              id: d.id,
+              nombre,
+              categoria,
+              sede,
+              fechaInicio,
+              fechaFin,
+              estatus,
+              participantesActual,
+              participantesMax,
+              portadaUrl,
+            }
+          })
+          setConcursos(rows)
+          setCargando(false)
+          setError(null)
+        },
+        (err) => {
+          console.error(err)
+          setError("Error al cargar concursos.")
+          setCargando(false)
+        }
+      )
+      return () => unsub()
+    } catch (e) {
+      console.error(e)
+      setError("Error al inicializar la lectura de concursos.")
+      setCargando(false)
+    }
   }, [])
+
+  const TABS: Array<EstadoConcurso | "Todos"> = ["Todos", "Activo", "Próximo", "Finalizado"]
+
+  const categorias: string[] = useMemo(() => {
+    const set = new Set<string>(concursos.map((c) => c.categoria || "General"))
+    return ["Todas", ...Array.from(set)]
+  }, [concursos])
 
   const resultados: Concurso[] = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
-    return concursosMock.filter((c) => {
+    return concursos.filter((c) => {
       const coincideTexto =
         !q ||
         c.nombre.toLowerCase().includes(q) ||
@@ -228,7 +294,7 @@ export default function Concursos() {
 
       return coincideTexto && coincideEstado && coincideCategoria
     })
-  }, [busqueda, tab, categoria])
+  }, [busqueda, tab, categoria, concursos])
 
   return (
     <section className="space-y-5">
@@ -296,20 +362,28 @@ export default function Concursos() {
         </div>
       </Card>
 
+      {/* Estados de carga / error */}
+      {cargando && <Card className="p-8 text-center text-sm text-gray-600">Cargando concursos…</Card>}
+      {error && !cargando && <Card className="p-8 text-center text-sm text-red-600">{error}</Card>}
+
       {/* Resumen */}
-      <div className="flex items-center justify-between text-sm text-gray-600">
-        <span>Resultados: <strong>{resultados.length}</strong></span>
-      </div>
+      {!cargando && !error && (
+        <div className="flex items-center justify-between text-sm text-gray-600">
+          <span>Resultados: <strong>{resultados.length}</strong></span>
+        </div>
+      )}
 
       {/* Grid */}
-      {resultados.length === 0 ? (
-        <Card className="p-8 text-center text-sm text-gray-600">No se encontraron concursos con esos filtros.</Card>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {resultados.map((c) => (
-            <TarjetaConcurso key={c.id} c={c} />
-          ))}
-        </div>
+      {!cargando && !error && (
+        resultados.length === 0 ? (
+          <Card className="p-8 text-center text-sm text-gray-600">No se encontraron concursos con esos filtros.</Card>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {resultados.map((c) => (
+              <TarjetaConcurso key={c.id} c={c} />
+            ))}
+          </div>
+        )
       )}
     </section>
   )
