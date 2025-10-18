@@ -8,13 +8,23 @@ type Props = HTMLMotionProps<"button"> & {
   size?: Sizes
 }
 
+/** Estilos base */
 const base =
-  "inline-flex items-center justify-center gap-2 rounded-xl2 font-medium transition focus:outline-none focus:ring-2 focus:ring-offset-2"
+  "inline-flex items-center justify-center gap-2 rounded-xl2 font-medium transition " +
+  "focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-60 disabled:pointer-events-none"
 
+/** Variantes
+ *  - solid: azul TecNM (como tu “primary”)
+ *  - ghost: el mismo que ya tenías (para fondos oscuros)
+ *  - outline: gris por defecto (puedes sobreescribir con className)
+ */
 const variants: Record<Variants, string> = {
-  solid: "bg-tecnm-azul text-white hover:brightness-95 focus:ring-tecnm-azul",
-  ghost: "bg-white/10 text-white hover:bg-white/20 focus:ring-white",
-  outline: "border border-gray-200 hover:bg-gray-50 text-[#0f172a]",
+  solid:
+    "bg-tecnm-azul text-white hover:brightness-95 focus:ring-tecnm-azul",
+  ghost:
+    "bg-white/10 text-white hover:bg-white/20 focus:ring-white",
+  outline:
+    "border border-gray-200 hover:bg-gray-50 text-[#0f172a] focus:ring-gray-200",
 }
 
 const sizes: Record<Sizes, string> = {
@@ -28,13 +38,15 @@ export default function Button({
   size = "md",
   className = "",
   children,
+  disabled,
   ...props
 }: Props) {
   return (
     <motion.button
-      whileTap={{ scale: 0.98 }}
-      whileHover={{ y: -1 }}
+      whileTap={{ scale: disabled ? 1 : 0.98 }}
+      whileHover={disabled ? undefined : { y: -1 }}
       className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+      disabled={disabled}
       {...props}
     >
       {children}
