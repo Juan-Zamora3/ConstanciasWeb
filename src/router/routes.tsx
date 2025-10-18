@@ -1,3 +1,4 @@
+// src/router/routes.tsx
 import { createBrowserRouter } from "react-router-dom"
 import AppLayout from "../layouts/AppLayout"
 
@@ -5,15 +6,18 @@ import AppLayout from "../layouts/AppLayout"
 import Home from "../pages/Home"
 import Concursos from "../pages/Concursos"
 import Plantillas from "../pages/Plantillas"
-import Constancias from "../pages/Constancias"   // 👈 importa la página real
+import Constancias from "../pages/Constancias"
 
-// Placeholders temporales
+// 🔵 NUEVO: constructor y público
+import FormularioBuilder from "../pages/FormularioBuilder"
+import FormularioPublico from "../pages/FormularioPublico"
+
+// Placeholders (si los sigues usando)
 const Equipos = () => <div>Equipos (próximo)</div>
 const Participantes = () => <div>Participantes (próximo)</div>
 const Login = () => <div>Login (próximo)</div>
 
 export const router = createBrowserRouter([
-  { path: "/login", element: <Login /> },
   {
     path: "/",
     element: <AppLayout />,
@@ -23,9 +27,14 @@ export const router = createBrowserRouter([
       { path: "concursos/:concursoId/equipos", element: <Equipos /> },
       { path: "concursos/:concursoId/equipos/:equipoId/participantes", element: <Participantes /> },
       { path: "plantillas", element: <Plantillas /> },
-      { path: "constancias", element: <Constancias /> },   // 👈 ya usa la página real
-      { path: "concursos/:concursoId/editar", element: <div>Editor de concurso (próximo)</div> },
+      { path: "constancias", element: <Constancias /> },
+
+      // 🔵 Rutas necesarias para los botones del modal
+      { path: "formulario-builder/:encuestaId", element: <FormularioBuilder /> },
+      { path: "formulario-publico/:encuestaId", element: <FormularioPublico /> },
     ],
   },
+
+  // 404
   { path: "*", element: <div style={{ padding: 24 }}>Página no encontrada</div> },
 ])

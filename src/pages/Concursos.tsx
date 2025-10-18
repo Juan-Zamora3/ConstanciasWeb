@@ -1,3 +1,4 @@
+// src/pages/Concursos.tsx
 import React, { useEffect, useMemo, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
@@ -7,6 +8,7 @@ import { Link, useNavigate } from "react-router-dom"
 // Firebase
 import { db, storage } from "../servicios/firebaseConfig"
 import {
+  addDoc,
   collection,
   onSnapshot,
   query,
@@ -18,7 +20,7 @@ import {
   updateDoc,
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
-import { ref, uploadBytes, getDownloadURL /*, deleteObject*/ } from "firebase/storage"
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
 
 /* ---------------- Tipos ---------------- */
 export type EstadoConcurso = "Activo" | "Próximo" | "Finalizado"
@@ -28,8 +30,8 @@ export type Concurso = {
   nombre: string
   categoria: string
   sede: string
-  fechaInicio: string // ISO YYYY-MM-DD
-  fechaFin: string    // ISO YYYY-MM-DD
+  fechaInicio: string
+  fechaFin: string
   estatus: EstadoConcurso
   participantesActual: number
   participantesMax: number
@@ -109,6 +111,8 @@ function EditCursoModal({
   curso: Concurso | null
   onSaved: (patch: Partial<Concurso>) => void
 }) {
+  const navigate = useNavigate()
+
   const [saving, setSaving] = useState(false)
   const [nombre, setNombre] = useState("")
   const [instructor, setInstructor] = useState("")
@@ -120,6 +124,7 @@ function EditCursoModal({
   const [tipoCurso, setTipoCurso] = useState<"personal" | "grupos">("grupos")
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | undefined>(undefined)
+  const [jumping, setJumping] = useState(false) // para deshabilitar botones de “ir al builder/público”
 
   useEffect(() => {
     if (!curso) return
@@ -144,11 +149,7 @@ function EditCursoModal({
     const url = URL.createObjectURL(f)
     setPreview(url)
   }
-
-  const quitarPortada = () => {
-    setFile(null)
-    setPreview(undefined)
-  }
+  const quitarPortada = () => { setFile(null); setPreview(undefined) }
 
   const guardar = async () => {
     try {
@@ -164,7 +165,6 @@ function EditCursoModal({
         tipoCurso,
       }
 
-      // subir imagen si se seleccionó
       let portadaUrl = preview
       if (file) {
         const path = `cursos/${curso.id}/portada-${Date.now()}-${file.name}`
@@ -172,14 +172,11 @@ function EditCursoModal({
         await uploadBytes(r, file)
         portadaUrl = await getDownloadURL(r)
       } else if (!preview) {
-        // Eliminada: limpia el campo en Firestore
         portadaUrl = ""
-        // Si quieres borrar del storage la anterior, guarda su path y usa deleteObject
       }
-
       patch.portadaUrl = portadaUrl || ""
-      await updateDoc(fsDoc(db, "Cursos", curso.id), patch as any)
 
+      await updateDoc(fsDoc(db, "Cursos", curso.id), patch as any)
       onSaved(patch)
       onClose()
     } catch (err) {
@@ -190,11 +187,82 @@ function EditCursoModal({
     }
   }
 
+  /** Busca/crea la encuesta ligada a este curso y retorna su ID */
+  const ensureEncuesta = async (cursoId: string): Promise<string> => {
+    // ¿ya existe?
+    const qy = query(collection(db, "encuestas"), where("cursoId", "==", cursoId))
+    const snap = await getDocs(qy)
+    if (!snap.empty) return snap.docs[0].id
+
+    // crear con estructura base (coincide con la que mostraste)
+    const baseDoc = {
+      cursoId,
+      creadoEn: Timestamp.now(),
+      creadoPor: null as string | null,
+      camposPreestablecidos: {
+        nombreEquipo: true,
+        nombreLider: true,
+        contactoEquipo: true,
+        categoria: true,
+        cantidadParticipantes: true,
+      },
+      cantidadParticipantes: 1,
+      categorias: [] as string[],
+      apariencia: {
+        fondoColor: "#f8fafc",
+        tituloColor: "#0f172a",
+        textoColor: "#0f172a",
+        overlay: 0.35,
+        fondoImagenUrl: "",
+        titulo: "Título de ejemplo",
+        subtitulo: "Texto de ejemplo del formulario",
+      },
+      preguntasPersonalizadas: [] as any[],
+      habilitado: true,
+    }
+    const refDoc = await addDoc(collection(db, "encuestas"), baseDoc)
+    return refDoc.id
+  }
+
+  const gotoBuilder = async () => {
+    try {
+      setJumping(true)
+      const encuestaId = await ensureEncuesta(curso.id)
+      onClose()
+      navigate(`/formulario-builder/${encuestaId}`)
+    } finally {
+      setJumping(false)
+    }
+  }
+
+  const gotoPublic = async () => {
+    try {
+      setJumping(true)
+      const encuestaId = await ensureEncuesta(curso.id)
+      onClose()
+      navigate(`/formulario-publico/${encuestaId}`)
+    } finally {
+      setJumping(false)
+    }
+  }
+
   return (
     <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30" onClick={onClose}/>
-      <motion.div initial={{ opacity: 0, y: 20, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.98 }} transition={{ duration: 0.18 }} className="fixed inset-0 z-50 grid place-items-center p-4">
-        <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/30" onClick={onClose}
+      />
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.98 }}
+        transition={{ duration: 0.18 }}
+        className="fixed inset-0 z-50 grid place-items-center p-4"
+      >
+        <div
+          className="w-full max-w-3xl rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="flex items-center justify-between px-5 py-4 border-b">
             <h2 className="text-lg font-semibold">Editar curso</h2>
             <button onClick={onClose} className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50">✕</button>
@@ -207,7 +275,12 @@ function EditCursoModal({
               {preview ? (
                 <div className="relative inline-block">
                   <img src={preview} alt="portada" className="h-32 w-32 object-cover rounded-xl" />
-                  <button type="button" onClick={quitarPortada} className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-red-600 text-white text-xs" title="Quitar portada">x</button>
+                  <button
+                    type="button"
+                    onClick={quitarPortada}
+                    className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-red-600 text-white text-xs"
+                    title="Quitar portada"
+                  >x</button>
                 </div>
               ) : (
                 <label className="text-tecnm-azul cursor-pointer underline">
@@ -267,23 +340,49 @@ function EditCursoModal({
             <div>
               <p className="text-sm text-gray-600 mb-1">Tipo de Curso</p>
               <div className="grid md:grid-cols-2 gap-3">
-                <button type="button" onClick={()=>setTipoCurso("personal")} className={`text-left p-3 rounded-xl border ${tipoCurso==="personal" ? "border-emerald-500 bg-emerald-50" : "border-gray-200 bg-white"}`}>
+                <button
+                  type="button"
+                  onClick={()=>setTipoCurso("personal")}
+                  className={`text-left p-3 rounded-xl border ${tipoCurso==="personal" ? "border-emerald-500 bg-emerald-50" : "border-gray-200 bg-white"}`}
+                >
                   <div className="font-medium">Por Personal</div>
                   <div className="text-sm text-gray-600">Gestión individual de participantes</div>
                 </button>
-                <button type="button" onClick={()=>setTipoCurso("grupos")} className={`text-left p-3 rounded-xl border ${tipoCurso==="grupos" ? "border-emerald-500 bg-emerald-50" : "border-gray-200 bg-white"}`}>
+                <button
+                  type="button"
+                  onClick={()=>setTipoCurso("grupos")}
+                  className={`text-left p-3 rounded-xl border ${tipoCurso==="grupos" ? "border-emerald-500 bg-emerald-50" : "border-gray-200 bg-white"}`}
+                >
                   <div className="font-medium">Por Grupos</div>
                   <div className="text-sm text-gray-600">Gestión por grupos o lotes</div>
                 </button>
               </div>
             </div>
+
+            {/* Enlaces rápidos al builder / público si es "grupos" */}
+            {tipoCurso === "grupos" && (
+              <div className="rounded-xl border bg-gray-50 p-3">
+                <p className="text-sm font-medium mb-2">Formulario de grupos</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="solid" onClick={gotoBuilder} disabled={jumping}>
+                    {jumping ? "Abriendo…" : "Configurar formulario"}
+                  </Button>
+                  <Button variant="outline" onClick={gotoPublic} disabled={jumping}>
+                    {jumping ? "Abriendo…" : "Ver/editar registro público"}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-2">
+                  Se creará automáticamente la encuesta del curso si aún no existe.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-end gap-2 px-5 py-4 border-t">
-            <Button variant="outline" onClick={onClose} disabled={saving}>Cancelar</Button>
-            <Button variant="solid" onClick={guardar} disabled={saving}>
-  {saving ? "Guardando…" : "Guardar cambios"}
-</Button>
+            <Button variant="outline" onClick={onClose} disabled={saving || jumping}>Cancelar</Button>
+            <Button variant="solid" onClick={guardar} disabled={saving || jumping}>
+              {saving ? "Guardando…" : "Guardar cambios"}
+            </Button>
           </div>
         </div>
       </motion.div>
@@ -411,17 +510,27 @@ function TarjetaConcurso({
 
           <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
             <Button
-  size="sm"
-  variant="solid"
-  className="bg-tecnm-azul text-white hover:bg-tecnm-azul-700"
-  onClick={() => onEdit(c)}
->
-  Editar
-</Button>
-            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
+              size="sm"
+              variant="solid"
+              className="bg-tecnm-azul text-white hover:bg-tecnm-azul-700"
+              onClick={() => onEdit(c)}
+            >
+              Editar
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5"
+              onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}
+            >
               Plantillas
             </Button>
-            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5"
+              onClick={() => navigate(`/constancias?concursoId=${c.id}`)}
+            >
               Constancias
             </Button>
           </div>
