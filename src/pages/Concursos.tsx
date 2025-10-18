@@ -18,7 +18,7 @@ import {
   getDocs,
   doc as fsDoc,
   updateDoc,
-  serverTimestamp, // 👈 NUEVO
+  serverTimestamp, // 👈 para creadoEn y coordinadores
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
@@ -125,7 +125,7 @@ function EditCursoModal({
   const [tipoCurso, setTipoCurso] = useState<"personal" | "grupos">("grupos")
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | undefined>(undefined)
-  const [jumping, setJumping] = useState(false) // para deshabilitar botones de “ir al builder/público”
+  const [jumping, setJumping] = useState(false)
 
   useEffect(() => {
     if (!curso) return
@@ -153,82 +153,76 @@ function EditCursoModal({
   const quitarPortada = () => { setFile(null); setPreview(undefined) }
 
   const guardar = async () => {
-  try {
-    setSaving(true)
+    try {
+      setSaving(true)
 
-    const basePatch: Partial<Concurso> = {
-      nombre: nombre.trim(),
-      instructor: instructor.trim(),
-      sede: sede.trim(),
-      categoria: categoria.trim(),
-      fechaInicio,
-      fechaFin,
-      descripcion: descripcion.trim(),
-      tipoCurso,
-    }
-
-    const esNuevo = curso.id === "__new__"
-
-    if (esNuevo) {
-      // 1) Crear el documento sin portada (aún no tenemos id para el path de Storage)
-      const docRef = await addDoc(collection(db, "Cursos"), {
-        ...basePatch,
-        estatus: "Activo",
-        participantesActual: 0,
-        participantesMax: 30,
-        portadaUrl: "",
-      } as any)
-
-      // 2) Si subieron imagen, súbela y actualiza el campo portadaUrl
-      if (file) {
-        const path = `cursos/${docRef.id}/portada-${Date.now()}-${file.name}`
-        const r = ref(storage, path)
-        await uploadBytes(r, file)
-        const portadaUrl = await getDownloadURL(r)
-        await updateDoc(docRef, { portadaUrl })
+      const basePatch: Partial<Concurso> = {
+        nombre: nombre.trim(),
+        instructor: instructor.trim(),
+        sede: sede.trim(),
+        categoria: categoria.trim(),
+        fechaInicio,
+        fechaFin,
+        descripcion: descripcion.trim(),
+        tipoCurso,
       }
 
-      // 3) Cierra modal. El listado se actualizará por el onSnapshot.
-      onSaved({})
+      const esNuevo = curso.id === "__new__"
+
+      if (esNuevo) {
+        const docRef = await addDoc(collection(db, "Cursos"), {
+          ...basePatch,
+          estatus: "Activo",
+          participantesActual: 0,
+          participantesMax: 30,
+          portadaUrl: "",
+        } as any)
+
+        if (file) {
+          const path = `cursos/${docRef.id}/portada-${Date.now()}-${file.name}`
+          const r = ref(storage, path)
+          await uploadBytes(r, file)
+          const portadaUrl = await getDownloadURL(r)
+          await updateDoc(docRef, { portadaUrl })
+        }
+
+        onSaved({})
+        onClose()
+        return
+      }
+
+      // edición
+      let portadaUrl = preview
+      if (file) {
+        const path = `cursos/${curso.id}/portada-${Date.now()}-${file.name}`
+        const r = ref(storage, path)
+        await uploadBytes(r, file)
+        portadaUrl = await getDownloadURL(r)
+      } else if (!preview) {
+        portadaUrl = ""
+      }
+
+      await updateDoc(fsDoc(db, "Cursos", curso.id), {
+        ...basePatch,
+        portadaUrl: portadaUrl || "",
+      } as any)
+
+      onSaved({ ...basePatch, portadaUrl: portadaUrl || "" })
       onClose()
-      return
+    } catch (err) {
+      console.error(err)
+      alert("No se pudo guardar. Revisa la consola.")
+    } finally {
+      setSaving(false)
     }
-
-    // ------- MODO EDICIÓN -------
-    let portadaUrl = preview
-    if (file) {
-      const path = `cursos/${curso.id}/portada-${Date.now()}-${file.name}`
-      const r = ref(storage, path)
-      await uploadBytes(r, file)
-      portadaUrl = await getDownloadURL(r)
-    } else if (!preview) {
-      portadaUrl = ""
-    }
-
-    await updateDoc(fsDoc(db, "Cursos", curso.id), {
-      ...basePatch,
-      portadaUrl: portadaUrl || "",
-    } as any)
-
-    onSaved({ ...basePatch, portadaUrl: portadaUrl || "" })
-    onClose()
-  } catch (err) {
-    console.error(err)
-    alert("No se pudo guardar. Revisa la consola.")
-  } finally {
-    setSaving(false)
   }
-}
-
 
   /** Busca/crea la encuesta ligada a este curso y retorna su ID */
   const ensureEncuesta = async (cursoId: string): Promise<string> => {
-    // ¿ya existe?
     const qy = query(collection(db, "encuestas"), where("cursoId", "==", cursoId))
     const snap = await getDocs(qy)
     if (!snap.empty) return snap.docs[0].id
 
-    // crear con estructura base (coincide con la que mostraste)
     const baseDoc = {
       cursoId,
       creadoEn: Timestamp.now(),
@@ -282,10 +276,7 @@ function EditCursoModal({
 
   return (
     <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 bg-black/30" onClick={onClose}
-      />
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30" onClick={onClose} />
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -293,10 +284,7 @@ function EditCursoModal({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div
-          className="w-full max-w-3xl rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between px-5 py-4 border-b">
             <h2 className="text-lg font-semibold">Editar curso</h2>
             <button onClick={onClose} className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50">✕</button>
@@ -309,12 +297,7 @@ function EditCursoModal({
               {preview ? (
                 <div className="relative inline-block">
                   <img src={preview} alt="portada" className="h-32 w-32 object-cover rounded-xl" />
-                  <button
-                    type="button"
-                    onClick={quitarPortada}
-                    className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-red-600 text-white text-xs"
-                    title="Quitar portada"
-                  >x</button>
+                  <button type="button" onClick={() => { setFile(null); setPreview(undefined) }} className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-red-600 text-white text-xs" title="Quitar portada">x</button>
                 </div>
               ) : (
                 <label className="text-tecnm-azul cursor-pointer underline">
@@ -393,7 +376,6 @@ function EditCursoModal({
               </div>
             </div>
 
-            {/* Enlaces rápidos al builder / público si es "grupos" */}
             {tipoCurso === "grupos" && (
               <div className="rounded-xl border bg-gray-50 p-3">
                 <p className="text-sm font-medium mb-2">Formulario de grupos</p>
@@ -424,7 +406,7 @@ function EditCursoModal({
   )
 }
 
-/* ---------------- NUEVO: Modal AÑADIR COORDINADOR ---------------- */
+/* ---------------- NUEVO: Modal AÑADIR COORDINADOR (con teléfono) ---------------- */
 function AddCoordinadorModal({
   open,
   onClose,
@@ -438,12 +420,14 @@ function AddCoordinadorModal({
   const [nombre, setNombre] = useState("")
   const [correo, setCorreo] = useState("")
   const [cargo, setCargo] = useState("Coordinador")
+  const [telefono, setTelefono] = useState("") // 👈 nuevo
 
   useEffect(() => {
     if (!open) {
       setNombre("")
       setCorreo("")
       setCargo("Coordinador")
+      setTelefono("") // reset
     }
   }, [open])
 
@@ -455,12 +439,13 @@ function AddCoordinadorModal({
     }
     try {
       setSaving(true)
-      await addDoc(collection(db, "coordinadores"), { // 👈 NUEVA COLECCIÓN
+      await addDoc(collection(db, "coordinadores"), {
         cursoId: curso.id,
         concursoNombre: curso.nombre ?? "",
         nombre: nombre.trim(),
         email: correo.trim(),
         cargo: cargo.trim(),
+        telefono: telefono.trim() || null, // 👈 se guarda si viene
         creadoEn: serverTimestamp(),
       })
       onClose()
@@ -476,10 +461,7 @@ function AddCoordinadorModal({
 
   return (
     <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 bg-black/30" onClick={onClose}
-      />
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30" onClick={onClose} />
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -487,49 +469,28 @@ function AddCoordinadorModal({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div
-          className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between px-5 py-4 border-b">
             <h2 className="text-lg font-semibold">Añadir Coordinador</h2>
-            <button
-              onClick={onClose}
-              className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50"
-              aria-label="Cerrar"
-            >
-              ✕
-            </button>
+            <button onClick={onClose} className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50" aria-label="Cerrar">✕</button>
           </div>
 
           <div className="p-5 space-y-3">
             <div>
               <label className="text-sm text-gray-600">Nombre</label>
-              <input
-                className="mt-1 w-full rounded-xl border px-3 py-2"
-                value={nombre}
-                onChange={(e) => setNombre(e.target.value)}
-                placeholder="Nombre completo"
-              />
+              <input className="mt-1 w-full rounded-xl border px-3 py-2" value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre completo" />
             </div>
             <div>
               <label className="text-sm text-gray-600">Correo</label>
-              <input
-                type="email"
-                className="mt-1 w-full rounded-xl border px-3 py-2"
-                value={correo}
-                onChange={(e) => setCorreo(e.target.value)}
-                placeholder="correo@ejemplo.com"
-              />
+              <input type="email" className="mt-1 w-full rounded-xl border px-3 py-2" value={correo} onChange={(e) => setCorreo(e.target.value)} placeholder="correo@ejemplo.com" />
             </div>
             <div>
               <label className="text-sm text-gray-600">Cargo</label>
-              <input
-                className="mt-1 w-full rounded-xl border px-3 py-2"
-                value={cargo}
-                onChange={(e) => setCargo(e.target.value)}
-                placeholder="Coordinador"
-              />
+              <input className="mt-1 w-full rounded-xl border px-3 py-2" value={cargo} onChange={(e) => setCargo(e.target.value)} placeholder="Coordinador" />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Teléfono</label>
+              <input type="tel" className="mt-1 w-full rounded-xl border px-3 py-2" value={telefono} onChange={(e) => setTelefono(e.target.value)} placeholder="(xxx) xxx xxxx" />
             </div>
           </div>
 
@@ -624,7 +585,7 @@ function TarjetaConcurso({
   c,
   onOpenEquipos,
   onEdit,
-  onAddCoord, // 👈 NUEVO
+  onAddCoord, // 👈 botón nuevo
 }: {
   c: Concurso
   onOpenEquipos: (c: Concurso) => void
@@ -666,37 +627,16 @@ function TarjetaConcurso({
           </div>
 
           <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
-            <Button
-              size="sm"
-              variant="solid"
-              className="bg-tecnm-azul text-white hover:bg-tecnm-azul-700"
-              onClick={() => onEdit(c)}
-            >
+            <Button size="sm" variant="solid" className="bg-tecnm-azul text-white hover:bg-tecnm-azul-700" onClick={() => onEdit(c)}>
               Editar
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5"
-              onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}
-            >
+            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
               Plantillas
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5"
-              onClick={() => navigate(`/constancias?concursoId=${c.id}`)}
-            >
+            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
               Constancias
             </Button>
-            {/* 👇 NUEVO botón */}
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5"
-              onClick={() => onAddCoord(c)}
-            >
+            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => onAddCoord(c)}>
               Añadir coordinador
             </Button>
           </div>
@@ -731,14 +671,14 @@ export default function Concursos() {
   const [editOpen, setEditOpen] = useState(false)
   const [editCurso, setEditCurso] = useState<Concurso | null>(null)
 
-  // Modal coordinador 👇
+  // Modal coordinador
   const [addCoordOpen, setAddCoordOpen] = useState(false)
   const [cursoCoord, setCursoCoord] = useState<Concurso | null>(null)
   const abrirAddCoord = (c: Concurso) => { setCursoCoord(c); setAddCoordOpen(true) }
 
   const abrirCrear = () => {
     setEditCurso({
-      id: "__new__",                      // bandera interna para saber que es nuevo
+      id: "__new__",
       nombre: "",
       categoria: "",
       sede: "Por definir",
@@ -874,28 +814,28 @@ export default function Concursos() {
 
   return (
     <section className="space-y-5">
-     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-  <div>
-    <h1 className="text-2xl font-bold tracking-tight">Concursos</h1>
-    <p className="text-sm text-gray-600">Gestiona equipos, plantillas y constancias por concurso.</p>
-  </div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Concursos</h1>
+          <p className="text-sm text-gray-600">Gestiona equipos, plantillas y constancias por concurso.</p>
+        </div>
 
-  <div className="flex gap-2">
-    {/* 👇 Nuevo */}
-    <Button variant="solid" onClick={abrirCrear}>
-      Nuevo curso
-    </Button>
-    <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
-  </div>
-</div>
+        <div className="flex gap-2">
+          <Button variant="solid" onClick={abrirCrear}>Nuevo curso</Button>
+          <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
+        </div>
+      </div>
 
       {/* Barra de acciones */}
       <Card className="p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2 overflow-auto">
-            {TABS.map((t) => (
-              <button key={t} onClick={() => setTab(t)}
-                className={`px-3 py-1.5 rounded-full text-sm border transition ${tab === t ? "bg-tecnm-azul text-white border-tecnm-azul" : "bg-white hover:bg-gray-50 text-gray-700 border-gray-200"}`}>
+            {["Todos", "Activo", "Próximo", "Finalizado"].map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t as any)}
+                className={`px-3 py-1.5 rounded-full text-sm border transition ${tab === t ? "bg-tecnm-azul text-white border-tecnm-azul" : "bg-white hover:bg-gray-50 text-gray-700 border-gray-200"}`}
+              >
                 {t}
               </button>
             ))}
@@ -910,7 +850,7 @@ export default function Concursos() {
             </div>
 
             <select value={categoria} onChange={(e)=>setCategoria(e.target.value)} className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">
-              {categorias.map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
+              {(["Todas", ...Array.from(new Set(concursos.map((c) => c.categoria || "General")))]).map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
             </select>
 
             <Button variant="outline" onClick={() => { setBusqueda(""); setCategoria("Todas"); setTab("Todos"); }}>
@@ -940,7 +880,7 @@ export default function Concursos() {
                 c={c}
                 onOpenEquipos={abrirEquipos}
                 onEdit={abrirEditar}
-                onAddCoord={abrirAddCoord} // 👈 NUEVO
+                onAddCoord={abrirAddCoord}
               />
             ))}
           </div>
@@ -950,7 +890,7 @@ export default function Concursos() {
       {/* Modales */}
       <ModalEquipos open={modalOpen} onClose={() => setModalOpen(false)} concurso={concursoSel} equipos={equipos} cargando={equiposLoading} error={equiposError} />
       <EditCursoModal open={editOpen} onClose={() => setEditOpen(false)} curso={editCurso} onSaved={onSavedPatch} />
-      <AddCoordinadorModal open={addCoordOpen} onClose={() => setAddCoordOpen(false)} curso={cursoCoord} /> {/* 👈 NUEVO */}
+      <AddCoordinadorModal open={addCoordOpen} onClose={() => setAddCoordOpen(false)} curso={cursoCoord} />
     </section>
   )
 }
