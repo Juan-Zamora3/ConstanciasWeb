@@ -18,7 +18,7 @@ import {
   getDocs,
   doc as fsDoc,
   updateDoc,
-  
+  serverTimestamp, // 👈 NUEVO
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
@@ -424,6 +424,127 @@ function EditCursoModal({
   )
 }
 
+/* ---------------- NUEVO: Modal AÑADIR COORDINADOR ---------------- */
+function AddCoordinadorModal({
+  open,
+  onClose,
+  curso,
+}: {
+  open: boolean
+  onClose: () => void
+  curso: Concurso | null
+}) {
+  const [saving, setSaving] = useState(false)
+  const [nombre, setNombre] = useState("")
+  const [correo, setCorreo] = useState("")
+  const [cargo, setCargo] = useState("Coordinador")
+
+  useEffect(() => {
+    if (!open) {
+      setNombre("")
+      setCorreo("")
+      setCargo("Coordinador")
+    }
+  }, [open])
+
+  const guardar = async () => {
+    if (!curso) return
+    if (!nombre.trim() || !correo.trim() || !cargo.trim()) {
+      alert("Completa nombre, correo y cargo.")
+      return
+    }
+    try {
+      setSaving(true)
+      await addDoc(collection(db, "coordinadores"), { // 👈 NUEVA COLECCIÓN
+        cursoId: curso.id,
+        concursoNombre: curso.nombre ?? "",
+        nombre: nombre.trim(),
+        email: correo.trim(),
+        cargo: cargo.trim(),
+        creadoEn: serverTimestamp(),
+      })
+      onClose()
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo guardar el coordinador.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open || !curso) return null
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/30" onClick={onClose}
+      />
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.98 }}
+        transition={{ duration: 0.18 }}
+        className="fixed inset-0 z-50 grid place-items-center p-4"
+      >
+        <div
+          className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 py-4 border-b">
+            <h2 className="text-lg font-semibold">Añadir Coordinador</h2>
+            <button
+              onClick={onClose}
+              className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50"
+              aria-label="Cerrar"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="p-5 space-y-3">
+            <div>
+              <label className="text-sm text-gray-600">Nombre</label>
+              <input
+                className="mt-1 w-full rounded-xl border px-3 py-2"
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+                placeholder="Nombre completo"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Correo</label>
+              <input
+                type="email"
+                className="mt-1 w-full rounded-xl border px-3 py-2"
+                value={correo}
+                onChange={(e) => setCorreo(e.target.value)}
+                placeholder="correo@ejemplo.com"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Cargo</label>
+              <input
+                className="mt-1 w-full rounded-xl border px-3 py-2"
+                value={cargo}
+                onChange={(e) => setCargo(e.target.value)}
+                placeholder="Coordinador"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t">
+            <Button variant="outline" onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button variant="solid" onClick={guardar} disabled={saving}>
+              {saving ? "Guardando…" : "Guardar"}
+            </Button>
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  )
+}
+
 /* ---------------- Modal EQUIPOS ---------------- */
 function ModalEquipos({
   open, onClose, concurso, equipos, cargando, error,
@@ -503,10 +624,12 @@ function TarjetaConcurso({
   c,
   onOpenEquipos,
   onEdit,
+  onAddCoord, // 👈 NUEVO
 }: {
   c: Concurso
   onOpenEquipos: (c: Concurso) => void
   onEdit: (c: Concurso) => void
+  onAddCoord: (c: Concurso) => void
 }) {
   const navigate = useNavigate()
   const tone: "azul" | "gris" | "verde" = c.estatus === "Activo" ? "azul" : c.estatus === "Próximo" ? "gris" : "verde"
@@ -567,6 +690,15 @@ function TarjetaConcurso({
             >
               Constancias
             </Button>
+            {/* 👇 NUEVO botón */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5"
+              onClick={() => onAddCoord(c)}
+            >
+              Añadir coordinador
+            </Button>
           </div>
 
           <div className="pt-1">
@@ -599,24 +731,29 @@ export default function Concursos() {
   const [editOpen, setEditOpen] = useState(false)
   const [editCurso, setEditCurso] = useState<Concurso | null>(null)
 
+  // Modal coordinador 👇
+  const [addCoordOpen, setAddCoordOpen] = useState(false)
+  const [cursoCoord, setCursoCoord] = useState<Concurso | null>(null)
+  const abrirAddCoord = (c: Concurso) => { setCursoCoord(c); setAddCoordOpen(true) }
+
   const abrirCrear = () => {
-  setEditCurso({
-    id: "__new__",                      // bandera interna para saber que es nuevo
-    nombre: "",
-    categoria: "",
-    sede: "Por definir",
-    fechaInicio: toISO(new Date()),
-    fechaFin: toISO(new Date()),
-    estatus: "Activo",
-    participantesActual: 0,
-    participantesMax: 30,
-    descripcion: "",
-    instructor: "",
-    tipoCurso: "grupos",
-    portadaUrl: "",
-  })
-  setEditOpen(true)
-}
+    setEditCurso({
+      id: "__new__",                      // bandera interna para saber que es nuevo
+      nombre: "",
+      categoria: "",
+      sede: "Por definir",
+      fechaInicio: toISO(new Date()),
+      fechaFin: toISO(new Date()),
+      estatus: "Activo",
+      participantesActual: 0,
+      participantesMax: 30,
+      descripcion: "",
+      instructor: "",
+      tipoCurso: "grupos",
+      portadaUrl: "",
+    })
+    setEditOpen(true)
+  }
 
   useEffect(() => {
     try {
@@ -751,9 +888,6 @@ export default function Concursos() {
     <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
   </div>
 </div>
-      
-
-      
 
       {/* Barra de acciones */}
       <Card className="p-3">
@@ -801,7 +935,13 @@ export default function Concursos() {
         ) : (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {resultados.map((c) => (
-              <TarjetaConcurso key={c.id} c={c} onOpenEquipos={abrirEquipos} onEdit={abrirEditar} />
+              <TarjetaConcurso
+                key={c.id}
+                c={c}
+                onOpenEquipos={abrirEquipos}
+                onEdit={abrirEditar}
+                onAddCoord={abrirAddCoord} // 👈 NUEVO
+              />
             ))}
           </div>
         )
@@ -810,6 +950,7 @@ export default function Concursos() {
       {/* Modales */}
       <ModalEquipos open={modalOpen} onClose={() => setModalOpen(false)} concurso={concursoSel} equipos={equipos} cargando={equiposLoading} error={equiposError} />
       <EditCursoModal open={editOpen} onClose={() => setEditOpen(false)} curso={editCurso} onSaved={onSavedPatch} />
+      <AddCoordinadorModal open={addCoordOpen} onClose={() => setAddCoordOpen(false)} curso={cursoCoord} /> {/* 👈 NUEVO */}
     </section>
   )
 }
