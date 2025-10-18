@@ -18,6 +18,7 @@ import {
   getDocs,
   doc as fsDoc,
   updateDoc,
+  
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
@@ -152,40 +153,73 @@ function EditCursoModal({
   const quitarPortada = () => { setFile(null); setPreview(undefined) }
 
   const guardar = async () => {
-    try {
-      setSaving(true)
-      const patch: Partial<Concurso> = {
-        nombre: nombre.trim(),
-        instructor: instructor.trim(),
-        sede: sede.trim(),
-        categoria: categoria.trim(),
-        fechaInicio,
-        fechaFin,
-        descripcion: descripcion.trim(),
-        tipoCurso,
-      }
+  try {
+    setSaving(true)
 
-      let portadaUrl = preview
+    const basePatch: Partial<Concurso> = {
+      nombre: nombre.trim(),
+      instructor: instructor.trim(),
+      sede: sede.trim(),
+      categoria: categoria.trim(),
+      fechaInicio,
+      fechaFin,
+      descripcion: descripcion.trim(),
+      tipoCurso,
+    }
+
+    const esNuevo = curso.id === "__new__"
+
+    if (esNuevo) {
+      // 1) Crear el documento sin portada (aún no tenemos id para el path de Storage)
+      const docRef = await addDoc(collection(db, "Cursos"), {
+        ...basePatch,
+        estatus: "Activo",
+        participantesActual: 0,
+        participantesMax: 30,
+        portadaUrl: "",
+      } as any)
+
+      // 2) Si subieron imagen, súbela y actualiza el campo portadaUrl
       if (file) {
-        const path = `cursos/${curso.id}/portada-${Date.now()}-${file.name}`
+        const path = `cursos/${docRef.id}/portada-${Date.now()}-${file.name}`
         const r = ref(storage, path)
         await uploadBytes(r, file)
-        portadaUrl = await getDownloadURL(r)
-      } else if (!preview) {
-        portadaUrl = ""
+        const portadaUrl = await getDownloadURL(r)
+        await updateDoc(docRef, { portadaUrl })
       }
-      patch.portadaUrl = portadaUrl || ""
 
-      await updateDoc(fsDoc(db, "Cursos", curso.id), patch as any)
-      onSaved(patch)
+      // 3) Cierra modal. El listado se actualizará por el onSnapshot.
+      onSaved({})
       onClose()
-    } catch (err) {
-      console.error(err)
-      alert("No se pudo guardar. Revisa la consola.")
-    } finally {
-      setSaving(false)
+      return
     }
+
+    // ------- MODO EDICIÓN -------
+    let portadaUrl = preview
+    if (file) {
+      const path = `cursos/${curso.id}/portada-${Date.now()}-${file.name}`
+      const r = ref(storage, path)
+      await uploadBytes(r, file)
+      portadaUrl = await getDownloadURL(r)
+    } else if (!preview) {
+      portadaUrl = ""
+    }
+
+    await updateDoc(fsDoc(db, "Cursos", curso.id), {
+      ...basePatch,
+      portadaUrl: portadaUrl || "",
+    } as any)
+
+    onSaved({ ...basePatch, portadaUrl: portadaUrl || "" })
+    onClose()
+  } catch (err) {
+    console.error(err)
+    alert("No se pudo guardar. Revisa la consola.")
+  } finally {
+    setSaving(false)
   }
+}
+
 
   /** Busca/crea la encuesta ligada a este curso y retorna su ID */
   const ensureEncuesta = async (cursoId: string): Promise<string> => {
@@ -565,6 +599,25 @@ export default function Concursos() {
   const [editOpen, setEditOpen] = useState(false)
   const [editCurso, setEditCurso] = useState<Concurso | null>(null)
 
+  const abrirCrear = () => {
+  setEditCurso({
+    id: "__new__",                      // bandera interna para saber que es nuevo
+    nombre: "",
+    categoria: "",
+    sede: "Por definir",
+    fechaInicio: toISO(new Date()),
+    fechaFin: toISO(new Date()),
+    estatus: "Activo",
+    participantesActual: 0,
+    participantesMax: 30,
+    descripcion: "",
+    instructor: "",
+    tipoCurso: "grupos",
+    portadaUrl: "",
+  })
+  setEditOpen(true)
+}
+
   useEffect(() => {
     try {
       const refCursos = collection(db, "Cursos")
@@ -684,13 +737,23 @@ export default function Concursos() {
 
   return (
     <section className="space-y-5">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Concursos</h1>
-          <p className="text-sm text-gray-600">Gestiona equipos, plantillas y constancias por concurso.</p>
-        </div>
-        <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
-      </div>
+     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+  <div>
+    <h1 className="text-2xl font-bold tracking-tight">Concursos</h1>
+    <p className="text-sm text-gray-600">Gestiona equipos, plantillas y constancias por concurso.</p>
+  </div>
+
+  <div className="flex gap-2">
+    {/* 👇 Nuevo */}
+    <Button variant="solid" onClick={abrirCrear}>
+      Nuevo curso
+    </Button>
+    <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
+  </div>
+</div>
+      
+
+      
 
       {/* Barra de acciones */}
       <Card className="p-3">
