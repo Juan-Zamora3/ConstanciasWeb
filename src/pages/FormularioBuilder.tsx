@@ -1,241 +1,751 @@
+// src/pages/FormularioBuilder.tsx
 import React, { useEffect, useMemo, useState } from "react"
 import { useParams, Link } from "react-router-dom"
-import { db } from "../servicios/firebaseConfig"
-import {
-  doc as fsDoc, getDoc, updateDoc, onSnapshot
-} from "firebase/firestore"
-import Button from "../components/ui/Button"
+import { motion } from "framer-motion"
 import { Card } from "../components/ui/Card"
+import Button from "../components/ui/Button"
 
-type Question = {
-  id: string
-  title: string
-  type: "open" | "select" | "radio" | "checkbox"
-  options?: string[]
-  required?: boolean
+// Firebase
+import { db, storage } from "../servicios/firebaseConfig"
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore"
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage"
+
+/* ========= Tipos ========= */
+type CampoPresetFlags = {
+  nombreEquipo?: boolean
+  nombreLider?: boolean
+  contactoEquipo?: boolean
+  categoria?: boolean
 }
 
-export default function FormularioBuilder() {
-  const { encuestaId } = useParams()
-  const [data, setData] = useState<any>(null)
-  const [saving, setSaving] = useState(false)
+type TipoPregunta = "texto" | "select" | "radio" | "checkbox"
 
+type Pregunta = {
+  id: string       // p1, p2, ...
+  titulo: string
+  tipo: TipoPregunta
+  opciones?: string[]
+  requerido?: boolean
+}
+
+type Apariencia = {
+  colorTitulo?: string
+  colorTexto?: string
+  colorFondo?: string
+  overlay?: number
+  bgImageUrl?: string
+}
+
+type EncuestaDoc = {
+  cursoId?: string
+  tituloCurso?: string
+  descripcionCurso?: string
+  camposPreestablecidos?: CampoPresetFlags
+  categorias?: string[]
+  cantidadParticipantes?: number
+  preguntas?: Pregunta[]
+  apariencia?: Apariencia
+}
+
+/* ========= Helpers ========= */
+const clamp = (n: number, a: number, b: number) => Math.min(b, Math.max(a, n))
+const nextId = (list: Pregunta[]) => {
+  const nums = list
+    .map((q) => Number(String(q.id).replace(/^p/, "")))
+    .filter((n) => !isNaN(n))
+  const max = nums.length ? Math.max(...nums) : 0
+  return `p${max + 1}`
+}
+
+/* ========= Builder ========= */
+export default function FormularioBuilder() {
+  const { encuestaId } = useParams<{ encuestaId: string }>()
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Estado
+  const [presets, setPresets] = useState<CampoPresetFlags>({
+    nombreEquipo: true,
+    nombreLider: true,
+    contactoEquipo: true,
+    categoria: true,
+  })
+  const [categorias, setCategorias] = useState<string[]>(["Opción 1"])
+  const [nuevoCat, setNuevoCat] = useState("")
+  const [cantidadParticipantes, setCantidadParticipantes] = useState<number>(4)
+
+  const [preguntas, setPreguntas] = useState<Pregunta[]>([])
+  const [apariencia, setApariencia] = useState<Apariencia>({
+    colorTitulo: "#0f172a",
+    colorTexto: "#0f172a",
+    colorFondo: "#ffffff",
+    overlay: 0.35,
+    bgImageUrl: "",
+  })
+
+  // UI crear pregunta rápida
+  const [npTitulo, setNpTitulo] = useState("")
+  const [npTipo, setNpTipo] = useState<TipoPregunta>("texto")
+  const [npReq, setNpReq] = useState(false)
+  const [npOpciones, setNpOpciones] = useState<string[]>([""])
+
+  /* ----- Cargar o crear encuesta ----- */
   useEffect(() => {
-    if (!encuestaId) return
-    const ref = fsDoc(db, "encuestas", encuestaId)
-    const unsub = onSnapshot(ref, (d) => setData(d.data()))
-    return () => unsub()
+    const run = async () => {
+      try {
+        if (!encuestaId) {
+          setError("Falta encuestaId en la URL.")
+          setLoading(false)
+          return
+        }
+        const ref = doc(db, "encuestas", encuestaId)
+        const snap = await getDoc(ref)
+
+        if (!snap.exists()) {
+          // Crea con defaults suaves
+          await setDoc(ref, {
+            createdAt: serverTimestamp(),
+            camposPreestablecidos: presets,
+            categorias,
+            cantidadParticipantes,
+            preguntas: [],
+            apariencia,
+          }, { merge: true })
+          setLoading(false)
+          return
+        }
+
+        const data = (snap.data() || {}) as EncuestaDoc
+        setPresets({
+          nombreEquipo: data.camposPreestablecidos?.nombreEquipo ?? true,
+          nombreLider: data.camposPreestablecidos?.nombreLider ?? true,
+          contactoEquipo: data.camposPreestablecidos?.contactoEquipo ?? true,
+          categoria: data.camposPreestablecidos?.categoria ?? true,
+        })
+        setCategorias(Array.isArray(data.categorias) && data.categorias.length ? data.categorias : ["Opción 1"])
+        setCantidadParticipantes(
+          typeof data.cantidadParticipantes === "number" ? data.cantidadParticipantes : 4
+        )
+        setPreguntas(Array.isArray(data.preguntas) ? data.preguntas : [])
+        setApariencia({
+          colorTitulo: data.apariencia?.colorTitulo ?? "#0f172a",
+          colorTexto: data.apariencia?.colorTexto ?? "#0f172a",
+          colorFondo: data.apariencia?.colorFondo ?? "#ffffff",
+          overlay: typeof data.apariencia?.overlay === "number" ? data.apariencia?.overlay : 0.35,
+          bgImageUrl: data.apariencia?.bgImageUrl ?? "",
+        })
+        setLoading(false)
+      } catch (e) {
+        console.error(e)
+        setError("No fue posible cargar la configuración.")
+        setLoading(false)
+      }
+    }
+    run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encuestaId])
 
-  const addQuestion = (type: Question["type"]) => {
-    const q: Question = { id: crypto.randomUUID(), title: "", type, options: type==="open"?[]:["Opción 1"], required:false }
-    setData((prev:any) => ({...prev, customQuestions: [...(prev.customQuestions||[]), q]}))
-  }
-
+  /* ----- Guardar ----- */
   const guardar = async () => {
-    if (!encuestaId || !data) return
-    setSaving(true)
-    await updateDoc(fsDoc(db, "encuestas", encuestaId), data)
-    setSaving(false)
+    if (!encuestaId) return
+    try {
+      setSaving(true)
+      const refDoc = doc(db, "encuestas", encuestaId)
+
+      const cleanPreguntas: Pregunta[] = preguntas.map((p) => ({
+        id: p.id,
+        titulo: p.titulo.trim(),
+        tipo: p.tipo,
+        requerido: !!p.requerido,
+        ...(p.tipo === "texto"
+          ? {}
+          : { opciones: (p.opciones || []).map((o) => o.trim()).filter(Boolean) }),
+      }))
+
+      await setDoc(
+        refDoc,
+        {
+          updatedAt: serverTimestamp(),
+          camposPreestablecidos: {
+            nombreEquipo: !!presets.nombreEquipo,
+            nombreLider: !!presets.nombreLider,
+            contactoEquipo: !!presets.contactoEquipo,
+            categoria: !!presets.categoria,
+          },
+          categorias: categorias.map((c) => c.trim()).filter(Boolean),
+          cantidadParticipantes: clamp(Number(cantidadParticipantes), 1, 15),
+          preguntas: cleanPreguntas,
+          apariencia: {
+            colorTitulo: apariencia.colorTitulo,
+            colorTexto: apariencia.colorTexto,
+            colorFondo: apariencia.colorFondo,
+            overlay: clamp(Number(apariencia.overlay ?? 0.35), 0, 1),
+            bgImageUrl: apariencia.bgImageUrl || "",
+          },
+        },
+        { merge: true }
+      )
+      alert("Configuración guardada.")
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo guardar. Revisa la consola.")
+    } finally {
+      setSaving(false)
+    }
   }
 
-  if (!data) return <Card className="p-6">Cargando…</Card>
+  /* ----- Imagen de fondo ----- */
+  const onBgFile = async (file: File) => {
+    if (!encuestaId || !file) return
+    try {
+      const path = `encuestas/${encuestaId}/bg-${Date.now()}-${file.name}`
+      const r = ref(storage, path)
+      await uploadBytes(r, file)
+      const url = await getDownloadURL(r)
+      setApariencia((a) => ({ ...a, bgImageUrl: url }))
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo subir la imagen.")
+    }
+  }
+
+  const quitarBg = async () => {
+    setApariencia((a) => ({ ...a, bgImageUrl: "" }))
+  }
+
+  /* ----- Categorías ----- */
+  const addCat = () => {
+    const s = nuevoCat.trim()
+    if (!s) return
+    if (categorias.includes(s)) return
+    setCategorias((prev) => [...prev, s])
+    setNuevoCat("")
+  }
+  const setCat = (i: number, v: string) =>
+    setCategorias((prev) => prev.map((c, j) => (j === i ? v : c)))
+  const delCat = (i: number) => setCategorias((prev) => prev.filter((_, j) => j !== i))
+
+  /* ----- Preguntas: crear / editar / eliminar ----- */
+  const resetNueva = () => {
+    setNpTitulo("")
+    setNpTipo("texto")
+    setNpReq(false)
+    setNpOpciones([""])
+  }
+  const addPregunta = () => {
+    const titulo = npTitulo.trim()
+    if (!titulo) return
+    const id = nextId(preguntas)
+    const nueva: Pregunta = {
+      id,
+      titulo,
+      tipo: npTipo,
+      requerido: npReq,
+      ...(npTipo === "texto"
+        ? {}
+        : { opciones: npOpciones.map((o) => o.trim()).filter(Boolean) }),
+    }
+    setPreguntas((prev) => [...prev, nueva])
+    resetNueva()
+  }
+
+  const setPregunta = (id: string, patch: Partial<Pregunta>) =>
+    setPreguntas((prev) => prev.map((q) => (q.id === id ? { ...q, ...patch } : q)))
+
+  const delPregunta = (id: string) =>
+    setPreguntas((prev) => prev.filter((q) => q.id !== id))
+
+  const upPregunta = (id: string) =>
+    setPreguntas((prev) => {
+      const i = prev.findIndex((q) => q.id === id)
+      if (i <= 0) return prev
+      const arr = [...prev]
+      ;[arr[i - 1], arr[i]] = [arr[i], arr[i - 1]]
+      return arr
+    })
+
+  const downPregunta = (id: string) =>
+    setPreguntas((prev) => {
+      const i = prev.findIndex((q) => q.id === id)
+      if (i < 0 || i >= prev.length - 1) return prev
+      const arr = [...prev]
+      ;[arr[i + 1], arr[i]] = [arr[i], arr[i + 1]]
+      return arr
+    })
+
+  const canAddMore = preguntas.length < 10
+
+  /* ----- Vista previa header simple ----- */
+  const headerStyle: React.CSSProperties = useMemo(
+    () => ({
+      backgroundColor: apariencia.colorFondo || "#fff",
+      color: apariencia.colorTexto || "#0f172a",
+      backgroundImage: apariencia.bgImageUrl ? `url(${apariencia.bgImageUrl})` : undefined,
+      backgroundSize: "cover",
+      backgroundPosition: "center",
+      position: "relative",
+    }),
+    [apariencia]
+  )
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <Card className="p-6">Cargando constructor…</Card>
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="p-6">
+        <Card className="p-6 text-red-600">{error}</Card>
+      </div>
+    )
+  }
 
   return (
-    <section className="space-y-5">
+    <section className="space-y-5 p-4 md:p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">Constructor de Formulario</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Constructor de Formulario</h1>
         <div className="flex gap-2">
-          <Link to={`/r/${encuestaId}`} target="_blank">
-            <Button variant="outline">Abrir formulario público</Button>
-          </Link>
-          <Button variant="solid" onClick={guardar} disabled={saving}>
-            {saving ? "Guardando…" : "Guardar"}
+          {encuestaId && (
+            <Link to={`/formulario-publico/${encuestaId}`} target="_blank">
+              <Button variant="outline">Ver formulario público</Button>
+            </Link>
+          )}
+          <Button onClick={guardar} disabled={saving}>
+            {saving ? "Guardando…" : "Guardar cambios"}
           </Button>
         </div>
       </div>
 
-      {/* Tipo de curso por grupos: categorías y #participantes */}
-      <Card className="p-4 space-y-3">
-        <h2 className="font-semibold">Configuración del formulario de grupos</h2>
+      {/* Apariencia */}
+      <Card className="p-4 space-y-4">
+        <h2 className="text-lg font-semibold">Apariencia de la pantalla</h2>
 
-        {/* Campos preestablecidos */}
-        <div>
-          <p className="font-medium mb-2">Campos Preestablecidos</p>
-          {["nombreEquipo","nombreLider","contactoEquipo","categoria"].map(k => (
-            <label key={k} className="flex items-center gap-2 mb-1">
-              <input
-                type="checkbox"
-                checked={!!data?.camposPreestablecidos?.[k]}
-                onChange={e => setData((p:any)=>({
-                  ...p, camposPreestablecidos: {...p.camposPreestablecidos, [k]: e.target.checked}
-                }))}
-              />
-              <span className="capitalize">{k.replace(/([A-Z])/g," $1")}</span>
-            </label>
-          ))}
-          <div className="mt-2">
-            <label className="text-sm text-gray-600">Cantidad de Participantes</label>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <label className="text-sm text-slate-700">Color de fondo</label>
             <input
-              type="number" min={1}
-              value={data?.camposPreestablecidos?.cantidadParticipantes || 4}
-              onChange={(e)=>setData((p:any)=>({
-                ...p, camposPreestablecidos: {...p.camposPreestablecidos, cantidadParticipantes: Number(e.target.value)}
-              }))}
-              className="ml-2 w-24 rounded-xl border px-3 py-1"
+              type="color"
+              value={apariencia.colorFondo || "#ffffff"}
+              onChange={(e) =>
+                setApariencia((a) => ({ ...a, colorFondo: e.target.value }))
+              }
+              className="h-10 w-24 rounded-lg border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm text-slate-700">Imagen de fondo</label>
+            <div className="flex items-center gap-3">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => e.target.files?.[0] && onBgFile(e.target.files[0])}
+              />
+              {apariencia.bgImageUrl && (
+                <Button variant="outline" size="sm" onClick={quitarBg}>
+                  Quitar
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm text-slate-700">Color del título</label>
+            <input
+              type="color"
+              value={apariencia.colorTitulo || "#0f172a"}
+              onChange={(e) =>
+                setApariencia((a) => ({ ...a, colorTitulo: e.target.value }))
+              }
+              className="h-10 w-24 rounded-lg border"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm text-slate-700">Color del texto</label>
+            <input
+              type="color"
+              value={apariencia.colorTexto || "#0f172a"}
+              onChange={(e) =>
+                setApariencia((a) => ({ ...a, colorTexto: e.target.value }))
+              }
+              className="h-10 w-24 rounded-lg border"
+            />
+          </div>
+
+          <div className="space-y-2 md:col-span-2">
+            <label className="text-sm text-slate-700">
+              Opacidad del overlay (0–1)
+            </label>
+            <input
+              type="number"
+              step={0.05}
+              min={0}
+              max={1}
+              value={apariencia.overlay ?? 0.35}
+              onChange={(e) =>
+                setApariencia((a) => ({ ...a, overlay: clamp(Number(e.target.value), 0, 1) }))
+              }
+              className="w-32 rounded-xl border px-3 py-2"
             />
           </div>
         </div>
 
-        {/* Categorías */}
-        <div className="pt-3">
-          <p className="font-medium mb-1">Agregar categorías</p>
-          {(data.categorias || []).map((cat:string, i:number) => (
-            <div key={i} className="flex gap-2 mb-2">
-              <input
-                value={cat}
-                onChange={e=>{
-                  const arr=[...(data.categorias||[])]; arr[i]=e.target.value
-                  setData((p:any)=>({...p, categorias: arr}))
+        {/* Preview simple */}
+        <div className="mt-3 rounded-xl border overflow-hidden">
+          <div className="p-6" style={headerStyle}>
+            {apariencia.overlay && apariencia.bgImageUrl && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: `rgba(0,0,0,${apariencia.overlay})`,
                 }}
-                className="flex-1 rounded-xl border px-3 py-2"
               />
-              <Button variant="outline" onClick={()=>{
-                const arr=[...(data.categorias||[])]; arr.splice(i,1)
-                setData((p:any)=>({...p, categorias: arr}))
-              }}>Quitar</Button>
+            )}
+            <div className="relative">
+              <h3
+                className="text-2xl font-extrabold"
+                style={{ color: apariencia.colorTitulo || "#0f172a" }}
+              >
+                Título de ejemplo
+              </h3>
+              <p>Texto de ejemplo del formulario</p>
             </div>
-          ))}
-          <Button variant="outline" onClick={()=>{
-            setData((p:any)=>({...p, categorias: [...(p.categorias||[]), ""]}))
-          }}>+ Agregar opción</Button>
+          </div>
         </div>
+      </Card>
 
-        {/* Plantillas por categoría (solo nombre/ID – tú lo conectas a tus plantillas) */}
-        <div className="pt-3">
-          <p className="font-medium mb-1">Plantillas de constancia</p>
-          {(data.categorias || []).map((cat:string) => (
-            <div key={cat} className="flex items-center gap-3 mb-2">
-              <div className="w-40 text-sm">{cat || "(sin nombre)"}</div>
+      {/* Presets + Categorías */}
+      <Card className="p-4 space-y-4">
+        <h2 className="text-lg font-semibold">Configuración base</h2>
+
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Campos preestablecidos</p>
+            <label className="flex items-center gap-2">
               <input
-                placeholder="Nombre/ID de plantilla…"
-                value={data.plantillasPorCategoria?.[cat] || ""}
-                onChange={e=>{
-                  setData((p:any)=>({...p, plantillasPorCategoria: {...(p.plantillasPorCategoria||{}), [cat]: e.target.value}}))
-                }}
-                className="flex-1 rounded-xl border px-3 py-2"
+                type="checkbox"
+                checked={!!presets.nombreEquipo}
+                onChange={(e) =>
+                  setPresets((p) => ({ ...p, nombreEquipo: e.target.checked }))
+                }
               />
-            </div>
-          ))}
-        </div>
-
-        {/* Apariencia */}
-        <div className="pt-3">
-          <p className="font-medium mb-1">Apariencia del formulario</p>
-          <div className="grid md:grid-cols-3 gap-3">
-            <label className="text-sm text-gray-600">Color de fondo
-              <input type="color" className="block w-full h-10 rounded" value={data.apariencia?.bgColor || "#ffffff"}
-                onChange={e=>setData((p:any)=>({...p, apariencia:{...p.apariencia, bgColor:e.target.value}}))}
-              />
+              <span>Nombre del Equipo</span>
             </label>
-            <label className="text-sm text-gray-600">Color del título
-              <input type="color" className="block w-full h-10 rounded" value={data.apariencia?.titleColor || "#0f172a"}
-                onChange={e=>setData((p:any)=>({...p, apariencia:{...p.apariencia, titleColor:e.target.value}}))}
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={!!presets.nombreLider}
+                onChange={(e) =>
+                  setPresets((p) => ({ ...p, nombreLider: e.target.checked }))
+                }
               />
+              <span>Nombre del Líder del Equipo</span>
             </label>
-            <label className="text-sm text-gray-600">Color del texto
-              <input type="color" className="block w-full h-10 rounded" value={data.apariencia?.textColor || "#0f172a"}
-                onChange={e=>setData((p:any)=>({...p, apariencia:{...p.apariencia, textColor:e.target.value}}))}
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={!!presets.contactoEquipo}
+                onChange={(e) =>
+                  setPresets((p) => ({ ...p, contactoEquipo: e.target.checked }))
+                }
               />
+              <span>Correo del Equipo</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={!!presets.categoria}
+                onChange={(e) =>
+                  setPresets((p) => ({ ...p, categoria: e.target.checked }))
+                }
+              />
+              <span>Categoría</span>
             </label>
           </div>
-          <div className="mt-2">
-            <label className="text-sm text-tecnm-azul underline cursor-pointer">
-              Imagen de fondo (desde tu equipo)
-              <input type="file" accept="image/*" className="hidden"
-                onChange={async (e)=>{
-                  const f = e.target.files?.[0]; if(!f) return
-                  const fr = new FileReader()
-                  fr.onload = () => setData((p:any)=>({...p, apariencia:{...p.apariencia, bgImageDataUrl: fr.result}}))
-                  fr.readAsDataURL(f)
-                }}
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Cantidad de participantes</p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCantidadParticipantes((n) => clamp(n - 1, 1, 15))}
+              >
+                –
+              </Button>
+              <input
+                type="number"
+                className="w-24 rounded-xl border px-3 py-2"
+                min={1}
+                max={15}
+                value={cantidadParticipantes}
+                onChange={(e) =>
+                  setCantidadParticipantes(clamp(Number(e.target.value), 1, 15))
+                }
               />
-            </label>
-            {data.apariencia?.bgImageDataUrl && (
-              <div className="mt-2 relative inline-block">
-                <img src={data.apariencia.bgImageDataUrl} className="h-24 rounded" />
-                <button className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full h-6 w-6"
-                  onClick={()=>setData((p:any)=>({...p, apariencia:{...p.apariencia, bgImageDataUrl:null}}))}
-                >x</button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCantidadParticipantes((n) => clamp(n + 1, 1, 15))}
+              >
+                +
+              </Button>
+            </div>
+            <p className="text-xs text-slate-500">Se usará en el formulario público.</p>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Agregar categorías</p>
+          <div className="grid md:grid-cols-2 gap-2">
+            {categorias.map((c, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input
+                  value={c}
+                  onChange={(e) => setCat(i, e.target.value)}
+                  className="flex-1 rounded-xl border px-3 py-2"
+                />
+                <Button variant="outline" size="sm" onClick={() => delCat(i)}>
+                  Eliminar
+                </Button>
               </div>
-            )}
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              value={nuevoCat}
+              onChange={(e) => setNuevoCat(e.target.value)}
+              placeholder="Nueva categoría"
+              className="rounded-xl border px-3 py-2"
+            />
+            <Button variant="outline" onClick={addCat}>
+              + Agregar opción
+            </Button>
           </div>
         </div>
       </Card>
 
       {/* Preguntas personalizadas */}
-      <Card className="p-4 space-y-3">
+      <Card className="p-4 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Preguntas personalizadas</h2>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={()=>addQuestion("open")}>Respuesta abierta</Button>
-            <Button variant="outline" onClick={()=>addQuestion("select")}>Lista desplegable</Button>
-            <Button variant="outline" onClick={()=>addQuestion("radio")}>Opción múltiple</Button>
-            <Button variant="outline" onClick={()=>addQuestion("checkbox")}>Checkbox</Button>
-          </div>
+          <h2 className="text-lg font-semibold">Preguntas Personalizadas</h2>
+          <span className="text-sm text-slate-600">
+            {preguntas.length}/10
+          </span>
         </div>
 
-        {(data.customQuestions||[]).map((q:Question, i:number)=>(
-          <div key={q.id} className="rounded-xl border p-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100">{q.type}</span>
+        {/* Nueva pregunta */}
+        <div className="grid md:grid-cols-12 gap-2 items-end">
+          <div className="md:col-span-5">
+            <label className="text-xs text-slate-600">Título de la pregunta *</label>
+            <input
+              value={npTitulo}
+              onChange={(e) => setNpTitulo(e.target.value)}
+              className="w-full rounded-xl border px-3 py-2"
+              placeholder="Escribe tu pregunta…"
+            />
+          </div>
+          <div className="md:col-span-3">
+            <label className="text-xs text-slate-600">Tipo</label>
+            <select
+              className="w-full rounded-xl border px-3 py-2"
+              value={npTipo}
+              onChange={(e) => {
+                const t = e.target.value as TipoPregunta
+                setNpTipo(t)
+                if (t === "texto") setNpOpciones([""])
+              }}
+            >
+              <option value="texto">Respuesta Abierta</option>
+              <option value="select">Lista Desplegable</option>
+              <option value="radio">Opción Múltiple (Radio)</option>
+              <option value="checkbox">Lista de Verificación (Checkbox)</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-xs text-slate-600">Requerido</label>
+            <div className="h-[42px] flex items-center">
               <input
-                value={q.title}
-                onChange={e=>{
-                  const arr=[...data.customQuestions]; arr[i]={...q, title:e.target.value}; setData((p:any)=>({...p, customQuestions:arr}))
-                }}
-                placeholder="Escribe tu pregunta…"
-                className="flex-1 rounded-xl border px-3 py-2"
+                type="checkbox"
+                checked={npReq}
+                onChange={(e) => setNpReq(e.target.checked)}
               />
-              <label className="text-sm flex items-center gap-1">
-                <input type="checkbox" checked={!!q.required}
-                  onChange={e=>{
-                    const arr=[...data.customQuestions]; arr[i]={...q, required:e.target.checked}; setData((p:any)=>({...p, customQuestions:arr}))
-                  }}
-                />
-                Requerida
-              </label>
-              <Button variant="outline" onClick={()=>{
-                const arr=[...data.customQuestions]; arr.splice(i,1); setData((p:any)=>({...p, customQuestions:arr}))
-              }}>Eliminar</Button>
             </div>
+          </div>
+          <div className="md:col-span-2">
+            <Button onClick={addPregunta} disabled={!canAddMore || !npTitulo.trim()}>
+              Agregar
+            </Button>
+          </div>
 
-            {q.type!=="open" && (
-              <div className="space-y-2">
-                {(q.options||[]).map((op, k)=>(
-                  <div key={k} className="flex gap-2">
+          {(npTipo === "select" || npTipo === "radio" || npTipo === "checkbox") && (
+            <div className="md:col-span-12">
+              <div className="text-xs text-slate-600 mb-1">Opciones</div>
+              <div className="grid md:grid-cols-2 gap-2">
+                {npOpciones.map((op, i) => (
+                  <div key={i} className="flex items-center gap-2">
                     <input
                       value={op}
-                      onChange={e=>{
-                        const arr=[...q.options!]; arr[k]=e.target.value
-                        const qs=[...data.customQuestions]; qs[i]={...q, options:arr}; setData((p:any)=>({...p, customQuestions:qs}))
-                      }}
-                      className="flex-1 rounded-xl border px-3 py-2"
+                      onChange={(e) =>
+                        setNpOpciones((prev) => prev.map((x, j) => (j === i ? e.target.value : x)))
+                      }
+                      className="w-full rounded-xl border px-3 py-2"
+                      placeholder={`Opción ${i + 1}`}
                     />
-                    <Button variant="outline" onClick={()=>{
-                      const arr=[...(q.options||[])]; arr.splice(k,1)
-                      const qs=[...data.customQuestions]; qs[i]={...q, options:arr}; setData((p:any)=>({...p, customQuestions:qs}))
-                    }}>Quitar</Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setNpOpciones((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      Quitar
+                    </Button>
                   </div>
                 ))}
-                <Button variant="outline" onClick={()=>{
-                  const arr=[...(q.options||[]), ""]; const qs=[...data.customQuestions]; qs[i]={...q, options:arr}; setData((p:any)=>({...p, customQuestions:qs}))
-                }}>+ Opción</Button>
               </div>
-            )}
+              <div className="mt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setNpOpciones((prev) => [...prev, ""])}
+                >
+                  + Agregar opción
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Listado editable */}
+        {preguntas.length === 0 ? (
+          <Card className="p-6 text-sm text-slate-600">
+            Aún no has agregado preguntas.
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {preguntas.map((q, idx) => (
+              <Card key={q.id} className="p-3">
+                <div className="flex items-start gap-3">
+                  <div className="h-8 w-8 grid place-items-center rounded-lg bg-slate-100 text-slate-700 font-semibold">
+                    {idx + 1}
+                  </div>
+                  <div className="flex-1 space-y-2">
+                    <input
+                      className="w-full rounded-xl border px-3 py-2"
+                      value={q.titulo}
+                      onChange={(e) => setPregunta(q.id, { titulo: e.target.value })}
+                    />
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <select
+                        className="rounded-xl border px-3 py-2"
+                        value={q.tipo}
+                        onChange={(e) =>
+                          setPregunta(q.id, {
+                            tipo: e.target.value as TipoPregunta,
+                            opciones:
+                              (e.target.value as TipoPregunta) === "texto" ? [] : (q.opciones || [""]),
+                          })
+                        }
+                      >
+                        <option value="texto">Respuesta Abierta</option>
+                        <option value="select">Lista Desplegable</option>
+                        <option value="radio">Opción Múltiple (Radio)</option>
+                        <option value="checkbox">Lista de Verificación (Checkbox)</option>
+                      </select>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={!!q.requerido}
+                          onChange={(e) => setPregunta(q.id, { requerido: e.target.checked })}
+                        />
+                        <span className="text-sm">Requerido</span>
+                      </label>
+
+                      <div className="ml-auto flex gap-2">
+                        <Button variant="outline" size="sm" onClick={() => upPregunta(q.id)}>
+                          ↑
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => downPregunta(q.id)}>
+                          ↓
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => delPregunta(q.id)}>
+                          Eliminar
+                        </Button>
+                      </div>
+                    </div>
+
+                    {q.tipo !== "texto" && (
+                      <div className="space-y-2">
+                        <div className="text-xs text-slate-600">Opciones</div>
+                        <div className="grid md:grid-cols-2 gap-2">
+                          {(q.opciones || [""]).map((op, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                              <input
+                                className="w-full rounded-xl border px-3 py-2"
+                                value={op}
+                                onChange={(e) =>
+                                  setPregunta(q.id, {
+                                    opciones: (q.opciones || []).map((x, j) =>
+                                      j === i ? e.target.value : x
+                                    ),
+                                  })
+                                }
+                                placeholder={`Opción ${i + 1}`}
+                              />
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  setPregunta(q.id, {
+                                    opciones: (q.opciones || []).filter((_, j) => j !== i),
+                                  })
+                                }
+                              >
+                                Quitar
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setPregunta(q.id, { opciones: [...(q.opciones || []), ""] })
+                          }
+                        >
+                          + Agregar opción
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            ))}
           </div>
-        ))}
+        )}
       </Card>
+
+      {/* Footer acciones */}
+      <div className="flex items-center justify-end gap-2">
+        {encuestaId && (
+          <Link to={`/formulario-publico/${encuestaId}`} target="_blank">
+            <Button variant="outline">Ver formulario público</Button>
+          </Link>
+        )}
+        <Button onClick={guardar} disabled={saving}>
+          {saving ? "Guardando…" : "Guardar cambios"}
+        </Button>
+      </div>
     </section>
   )
 }
