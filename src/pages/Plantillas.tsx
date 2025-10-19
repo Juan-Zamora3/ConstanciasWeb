@@ -1,213 +1,882 @@
-import { useMemo, useState } from "react"
-import { motion, AnimatePresence } from "framer-motion"
-import { Card } from "../components/ui/Card"
-import Button from "../components/ui/Button"
+"use client";
 
-/* ---------------- Tipos + Mock (quitar cuando conectes backend) ---------------- */
-type TipoPlantilla = "Coordinador" | "Asesor" | "Integrante" | "Equipo"
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { Card } from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import { PDFDocument } from "pdf-lib"; // solo para obtener tamaño de página
+
+// RND robusto (CJS/ESM)
+import * as ReactRnd from "react-rnd";
+const Rnd: any =
+  (ReactRnd as any).Rnd || (ReactRnd as any).default || (ReactRnd as any);
+
+// Firebase
+import { db, storage } from "../servicios/firebaseConfig";
+import {
+  addDoc,
+  collection,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+  doc as fsDoc,
+  updateDoc,
+  deleteDoc,
+  serverTimestamp,
+  Timestamp,
+  arrayUnion,
+} from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+
+/* ======================= PDF.js por CDN ======================= */
+declare global {
+  interface Window {
+    pdfjsLib?: any;
+  }
+}
+const PDFJS_CDN = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174";
+
+const ensurePdfJs = async (): Promise<any> => {
+  if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
+
+  await new Promise<void>((res, rej) => {
+    const s = document.createElement("script");
+    s.src = `${PDFJS_CDN}/build/pdf.min.js`;
+    s.onload = () => res();
+    s.onerror = () => rej(new Error("No se pudo cargar pdf.min.js"));
+    document.head.appendChild(s);
+  });
+
+  const pdfjsLib = (window as any).pdfjsLib;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/build/pdf.worker.min.js`;
+  return pdfjsLib;
+};
+
+/* ======================= Canvas PDF ======================= */
+function PDFCanvas({
+  bytes,
+  displayWidth,
+  onRendered,
+}: {
+  bytes: Uint8Array; // requerido (evita 0 bytes)
+  displayWidth: number;
+  onRendered?: (displayHeight: number) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!bytes || bytes.byteLength === 0 || !displayWidth) return;
+    let cancelled = false;
+    let destroyTask: (() => void) | undefined;
+
+    (async () => {
+      const pdfjsLib = await ensurePdfJs();
+
+      // ⚠️ CLAVE: crear copia para que el worker "detachee" la copia, no el buffer original
+      const dataForWorker = bytes.slice();
+
+      const lt = pdfjsLib.getDocument({
+        data: dataForWorker,
+        cMapUrl: `${PDFJS_CDN}/cmaps/`,
+        cMapPacked: true,
+        standardFontDataUrl: `${PDFJS_CDN}/standard_fonts/`,
+      });
+
+      const pdf = await lt.promise;
+      const page = await pdf.getPage(1);
+
+      // Bloqueamos rotación para evitar PDF volteado
+      const rotation = 0;
+      const ratio = Math.max(1, window.devicePixelRatio || 1);
+      const v0 = page.getViewport({ scale: 1, rotation });
+      const scale = displayWidth / v0.width;
+      const viewport = page.getViewport({ scale: scale * ratio, rotation });
+
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext("2d")!;
+
+      const w = Math.floor(viewport.width);
+      const h = Math.floor(viewport.height);
+
+      canvas.width = w;
+      canvas.height = h;
+      canvas.style.width = `${Math.floor(w / ratio)}px`;
+      canvas.style.height = `${Math.floor(h / ratio)}px`;
+
+      ctx.save();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+
+      const renderTask = page.render({ canvasContext: ctx, viewport });
+      await renderTask.promise;
+
+      if (!cancelled) onRendered?.(Math.floor(h / ratio));
+
+      destroyTask = () => {
+        try {
+          lt.destroy?.();
+        } catch {}
+        try {
+          pdf.cleanup?.();
+        } catch {}
+      };
+    })().catch((e) => {
+      console.error("PDF render error:", e);
+    });
+
+    return () => {
+      cancelled = true;
+      try {
+        destroyTask?.();
+      } catch {}
+    };
+  }, [bytes, displayWidth, onRendered]);
+
+  return <canvas ref={canvasRef} style={{ display: "block" }} />;
+}
+
+/* ============================= Tipos y helpers ============================= */
+type TipoPlantilla = "Coordinador" | "Asesor" | "Integrante" | "Equipo";
+type Align = "left" | "center" | "right";
+
+type BoxCfg = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  size: number;
+  align: Align;
+  bold: boolean;
+  color: string;
+  font: string;
+};
+
+type Layout = {
+  width: number;
+  height: number;
+  boxes: Record<string, BoxCfg>;
+  mensajeBase: string;
+};
 
 type Plantilla = {
-  id: string
-  nombre: string
-  tipo: TipoPlantilla
-  concursoId: string
-  actualizadoEn: string // ISO
-  contenido?: string    // (placeholder) html/markdown si lo usas después
-}
+  id: string;
+  nombre: string;
+  tipo: TipoPlantilla;
+  concursoId: string;
+  actualizadoEn: string;
+  layout: Layout;
+  pdfUrl?: string;
+};
 
-type Concurso = {
-  id: string
-  nombre: string
-}
-
-const concursosMock: Concurso[] = [
-  { id: "bd2025", nombre: "Concurso de Bases de Datos" },
-  { id: "prog2025", nombre: "Hackathon de Programación" },
-  { id: "robot2025", nombre: "Torneo de Robótica" },
-]
-
-const plantillasIniciales: Plantilla[] = [
-  { id: "p1", nombre: "Coordinador general", tipo: "Coordinador", concursoId: "bd2025", actualizadoEn: "2025-10-02T10:00:00Z" },
-  { id: "p2", nombre: "Constancia para Asesor", tipo: "Asesor", concursoId: "prog2025", actualizadoEn: "2025-11-01T12:10:00Z" },
-  { id: "p3", nombre: "Integrante estándar", tipo: "Integrante", concursoId: "robot2025", actualizadoEn: "2025-09-18T09:30:00Z" },
-  { id: "p4", nombre: "Reconocimiento a Equipo Campeón", tipo: "Equipo", concursoId: "robot2025", actualizadoEn: "2025-09-20T16:20:00Z" },
-]
-/* ------------------------------------------------------------------------------- */
-
-const TABS: Array<TipoPlantilla | "Todas"> = ["Todas", "Coordinador", "Asesor", "Integrante", "Equipo"]
+type Concurso = { id: string; nombre: string };
 
 const varsPorTipo: Record<TipoPlantilla, string[]> = {
-  Coordinador: ["{{NOMBRE}}", "{{CARGO}}", "{{CONCURSO}}", "{{FECHA}}"],
-  Asesor: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{FECHA}}"],
-  Integrante: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{PUESTO}}", "{{FECHA}}"],
-  Equipo: ["{{NOMBRE_EQUIPO}}", "{{CONCURSO}}", "{{CATEGORIA}}", "{{LUGAR}}", "{{FECHA}}"],
-}
+  Coordinador: ["{{NOMBRE}}", "{{CARGO}}", "{{CONCURSO}}", "{{FECHA}}", "{{MENSAJE}}"],
+  Asesor: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{FECHA}}", "{{MENSAJE}}"],
+  Integrante: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{FECHA}}", "{{MENSAJE}}"],
+  Equipo: [
+    "{{NOMBRE_EQUIPO}}",
+    "{{CONCURSO}}",
+    "{{CATEGORIA}}",
+    "{{LUGAR}}",
+    "{{FECHA}}",
+    "{{MENSAJE}}",
+  ],
+};
 
-/* -------------------------- Componentes auxiliares -------------------------- */
+const mensajeDefault: Record<TipoPlantilla, string> = {
+  Coordinador:
+    "Se otorga a {{NOMBRE}} por su destacada participación como {{CARGO}} en el {{CONCURSO}}.",
+  Asesor:
+    "Se otorga a {{NOMBRE}} por su acompañamiento en el {{CONCURSO}} con el equipo {{EQUIPO}}.",
+  Integrante:
+    "Se otorga a {{NOMBRE}} por su participación en el {{CONCURSO}} con el equipo {{EQUIPO}}.",
+  Equipo: "Se reconoce al equipo {{NOMBRE_EQUIPO}} por su participación en el {{CONCURSO}}.",
+};
+
+const FUENTES = [
+  "Inter",
+  "Arial",
+  "Helvetica",
+  "Times New Roman",
+  "Georgia",
+  "Garamond",
+  "Trebuchet MS",
+  "Verdana",
+  "Tahoma",
+  "Courier New",
+  "Roboto",
+  "Noto Sans",
+  "Montserrat",
+  "Poppins",
+  "Lato",
+  "Open Sans",
+  "Work Sans",
+  "Nunito",
+  "Merriweather",
+  "Playfair Display",
+  "Rubik",
+  "Fira Sans",
+  "Karla",
+  "Mulish",
+  "Barlow",
+  "Manrope",
+  "Hind",
+  "Asap",
+  "Cabin",
+  "Muli",
+  "Source Sans Pro",
+  "Quicksand",
+  "PT Sans",
+  "IBM Plex Sans",
+  "Exo 2",
+  "Raleway",
+  "DM Sans",
+  "Catamaran",
+  "Abril Fatface",
+  "Bitter",
+  "Zilla Slab",
+  "Crimson Pro",
+  "Spectral",
+  "Josefin Sans",
+  "Cairo",
+  "Kumbh Sans",
+  "Plus Jakarta Sans",
+  "Space Grotesk",
+  "Inter Tight",
+  "Urbanist",
+  "Public Sans",
+  "Jost",
+];
+
+const mkBox = (
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  size = 16,
+  align: Align = "center",
+  bold = false
+): BoxCfg => ({
+  x,
+  y,
+  w,
+  h,
+  size,
+  align,
+  bold,
+  color: "#0f172a",
+  font: "Inter",
+});
+
 function ChipTipo({ tipo }: { tipo: TipoPlantilla }) {
   const map: Record<TipoPlantilla, string> = {
     Coordinador: "bg-gray-100 text-tecnm-azul",
     Asesor: "bg-gray-100 text-gray-700",
     Integrante: "bg-green-100 text-green-700",
     Equipo: "bg-indigo-100 text-indigo-700",
-  }
-  return <span className={`px-2 py-0.5 text-xs rounded-full ${map[tipo]}`}>{tipo}</span>
+  };
+  return <span className={`px-2 py-0.5 text-xs rounded-full ${map[tipo]}`}>{tipo}</span>;
 }
 
-function NombreConcurso({ id }: { id: string }) {
-  const c = concursosMock.find(x => x.id === id)
-  return <>{c ? c.nombre : "—"}</>
+function NombreConcursoInline({
+  id,
+  concursos,
+}: {
+  id: string;
+  concursos: Concurso[];
+}) {
+  const c = concursos.find((x) => x.id === id);
+  return <>{c ? c.nombre : "—"}</>;
 }
 
-/* ------------------------------ Modal CRUD ------------------------------ */
+/* ============================== Modal + editor ============================== */
 type FormState = {
-  id?: string
-  nombre: string
-  tipo: TipoPlantilla
-  concursoId: string
-}
+  id?: string;
+  nombre: string;
+  tipo: TipoPlantilla | "";
+  concursoId: string;
+  layout: Layout;
+  pdfUrl?: string;
+};
+
+const sanitizeBoxes = (boxes: Record<string, BoxCfg>) => {
+  const seen = new Set<string>();
+  const entries = Object.entries(boxes).filter(([k]) => k && !seen.has(k) && seen.add(k));
+  return Object.fromEntries(entries);
+};
 
 function ModalPlantilla({
   open,
   onClose,
   onSave,
   initial,
+  concursos,
 }: {
-  open: boolean
-  initial?: FormState
-  onClose: () => void
-  onSave: (p: FormState) => void
+  open: boolean;
+  initial?: FormState;
+  onClose: () => void;
+  onSave: (p: FormState & { _pdfFile?: File | null }) => void;
+  concursos: Concurso[];
 }) {
-  const [form, setForm] = useState<FormState>(
-    initial ?? { nombre: "", tipo: "Integrante", concursoId: concursosMock[0]?.id ?? "" }
-  )
+  const [form, setForm] = useState<FormState>(() => ({
+    ...(initial ?? {
+      nombre: "",
+      tipo: "",
+      concursoId: "",
+      layout: { width: 520, height: 360, boxes: {}, mensajeBase: "" },
+      pdfUrl: undefined,
+    }),
+  }));
 
-  // Sincroniza cuando cambia initial (editar)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useMemo(() => setForm(initial ?? { nombre: "", tipo: "Integrante", concursoId: concursosMock[0]?.id ?? "" }), [initial])
+  const [active, setActive] = useState<string | null>(null);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | undefined>(undefined);
 
-  const vars = varsPorTipo[form.tipo]
+  const [enabled, setEnabled] = useState<Set<string>>(
+    () => new Set(initial ? Object.keys(initial.layout.boxes).filter(Boolean) : [])
+  );
 
-  if (!open) return null
+  // Auto scale
+  const centerRef = useRef<HTMLDivElement | null>(null);
+  const [displayScale, setDisplayScale] = useState(1);
+
+  useEffect(() => {
+    const el = centerRef.current;
+    if (!el || !form.layout.width || !form.layout.height) return;
+
+    const recalc = () => {
+      const aw = el.clientWidth - 16;
+      const ah = el.clientHeight - 16;
+      const s = Math.min(1, aw / form.layout.width, ah / form.layout.height);
+      setDisplayScale(Number.isFinite(s) && s > 0 ? s : 1);
+    };
+
+    const ro = new ResizeObserver(recalc);
+    ro.observe(el);
+    recalc();
+
+    return () => ro.disconnect();
+  }, [form.layout.width, form.layout.height]);
+
+  // Reset al abrir
+  useEffect(() => {
+    if (!open) return;
+    if (initial) {
+      setForm({
+        ...initial,
+        layout: { ...initial.layout, boxes: sanitizeBoxes(initial.layout.boxes || {}) },
+      });
+      setEnabled(new Set(Object.keys(initial.layout.boxes || {}).filter(Boolean)));
+      setPdfFile(null);
+      setPdfBytes(undefined);
+    } else {
+      setForm({
+        nombre: "",
+        tipo: "",
+        concursoId: "",
+        layout: { width: 520, height: 360, boxes: {}, mensajeBase: "" },
+      });
+      setEnabled(new Set());
+      setPdfFile(null);
+      setPdfBytes(undefined);
+    }
+    setActive(null);
+  }, [open, initial]);
+
+  // Cargar pdfUrl existente a bytes (para previsualizar)
+  useEffect(() => {
+    let canceled = false;
+    (async () => {
+      if (!open) return;
+      if (!form.pdfUrl || pdfBytes) return;
+      try {
+        const res = await fetch(form.pdfUrl);
+        const ab = await res.arrayBuffer();
+        if (canceled) return;
+        if (!ab || ab.byteLength === 0) return;
+        const safe = new Uint8Array(ab);
+        setPdfBytes(safe);
+        // actualizar tamaño si hace falta
+        try {
+          const doc = await PDFDocument.load(safe);
+          const page = doc.getPages()[0];
+          const w = Math.round(page.getWidth());
+          const h = Math.round(page.getHeight());
+          setForm((f) => ({ ...f, layout: { ...f.layout, width: w, height: h } }));
+        } catch {}
+      } catch (e) {
+        console.warn("No se pudo descargar el PDF existente:", e);
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [open, form.pdfUrl, pdfBytes]);
+
+  // Mensaje por tipo (solo nuevo)
+  useEffect(() => {
+    if (form.id) return;
+    setForm((f) => ({
+      ...f,
+      layout: { ...f.layout, mensajeBase: f.tipo ? mensajeDefault[f.tipo] : "" },
+    }));
+  }, [form.tipo]);
+
+  // Drag tokens → textarea
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const onDragStartChip = (e: React.DragEvent, token: string) => {
+    e.dataTransfer.setData("text/plain", token);
+  };
+  const onDropTextarea = (e: React.DragEvent<HTMLTextAreaElement>) => {
+    e.preventDefault();
+    const token = e.dataTransfer.getData("text/plain");
+    if (!token) return;
+    const el = e.currentTarget;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const v = el.value.slice(0, start) + token + el.value.slice(end);
+    setForm((f) => ({ ...f, layout: { ...f.layout, mensajeBase: v } }));
+  };
+
+  const vars = form.tipo ? varsPorTipo[form.tipo] : [];
+  const box = (tok: string) => form.layout.boxes[tok];
+
+  const patchBox = (tok: string, patch: Partial<BoxCfg>) =>
+    setForm((f) => ({
+      ...f,
+      layout: {
+        ...f.layout,
+        boxes: { ...f.layout.boxes, [tok]: { ...f.layout.boxes[tok], ...patch } },
+      },
+    }));
+
+  const toggleToken = (tok: string) => {
+    setEnabled((prev) => {
+      const n = new Set(prev);
+      if (n.has(tok)) {
+        n.delete(tok);
+        setForm((f) => {
+          const copy = { ...f.layout.boxes };
+          delete copy[tok];
+          return { ...f, layout: { ...f.layout, boxes: copy } };
+        });
+        if (active === tok) setActive(null);
+      } else {
+        n.add(tok);
+        setForm((f) => {
+          const exists = f.layout.boxes[tok];
+          const W = Math.max(200, f.layout.width - 80);
+          const pos = exists ?? mkBox(40, 60, W, 32, 16, "center", tok.includes("NOMBRE"));
+          return { ...f, layout: { ...f.layout, boxes: { ...f.layout.boxes, [tok]: pos } } };
+        });
+      }
+      return n;
+    });
+  };
+
+  // Subir PDF → bytes + tamaño (usamos pdf-lib para tamaño)
+  const handlePdf = async (file: File | null) => {
+    if (!file) return;
+    if (file.size === 0) {
+      alert("El PDF está vacío.");
+      return;
+    }
+    try {
+      const ab = await file.arrayBuffer();
+      if (!ab || ab.byteLength === 0) {
+        alert("El PDF está vacío.");
+        return;
+      }
+      const safe = new Uint8Array(ab.slice(0));
+      // tamaño con pdf-lib
+      const doc = await PDFDocument.load(safe);
+      const page = doc.getPages()[0];
+      const w = Math.round(page.getWidth());
+      const h = Math.round(page.getHeight());
+
+      setForm((f) => ({
+        ...f,
+        layout: { ...f.layout, width: w, height: h },
+      }));
+      setPdfFile(file);
+      setPdfBytes(safe);
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo leer el PDF. Verifica el archivo.");
+    }
+  };
+
+  if (!open) return null;
+
+  const displayW = Math.max(1, Math.floor(form.layout.width * displayScale));
+  const displayH = Math.max(1, Math.floor(form.layout.height * displayScale));
+  const activeBox = active ? form.layout.boxes[active] : undefined;
+
+  const tokenKeys = [...new Set(Object.keys(form.layout.boxes).filter(Boolean))];
 
   return (
     <AnimatePresence>
       <motion.div
         key="overlay"
         className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50"
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
         onClick={onClose}
       />
       <motion.div
         key="dialog"
-        className="fixed inset-0 z-50 grid place-items-center px-4"
-        initial={{ opacity: 0, y: 12, scale: .98 }}
+        className="fixed inset-0 z-50 grid place-items-center p-4"
+        initial={{ opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 12, scale: .98 }}
+        exit={{ opacity: 0, y: 8, scale: 0.98 }}
       >
-        <Card className="w-full max-w-4xl p-4 relative">
-          <div className="flex items-start gap-4">
-            {/* Formulario */}
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold mb-2">{form.id ? "Editar plantilla" : "Nueva plantilla"}</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Card
+          className="w-[96vw] h-[92vh] max-w-none bg-white rounded-2xl border shadow-xl p-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="grid grid-cols-[360px_1fr_340px] gap-6 h-full overflow-hidden">
+            {/* Izquierda */}
+            <div className="pr-1 overflow-auto">
+              <h3 className="text-lg font-semibold mb-3">
+                {form.id ? "Editar plantilla" : "Nueva plantilla"}
+              </h3>
+
+              <div className="space-y-3">
                 <div>
-                  <label className="text-xs text-gray-600">Nombre</label>
+                  <label className="text-xs text-slate-600">Nombre</label>
                   <input
-                    className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                     value={form.nombre}
-                    onChange={e => setForm({ ...form, nombre: e.target.value })}
-                    placeholder="Ej. Reconocimiento de Integrante"
+                    onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+                    placeholder="Ej. Constancia de Integrante"
                   />
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-600">Tipo de plantilla</label>
+                    <select
+                      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                      value={form.tipo}
+                      onChange={(e) =>
+                        setForm({ ...form, tipo: e.target.value as TipoPlantilla | "" })
+                      }
+                    >
+                      <option value="" disabled>
+                        Selecciona un tipo…
+                      </option>
+                      {(["Coordinador", "Asesor", "Integrante", "Equipo"] as TipoPlantilla[]).map(
+                        (t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-slate-600">Concurso</label>
+                    <select
+                      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                      value={form.concursoId}
+                      onChange={(e) => setForm({ ...form, concursoId: e.target.value })}
+                    >
+                      <option value="" disabled>
+                        Selecciona un concurso…
+                      </option>
+                      {concursos.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.nombre}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <div>
-                  <label className="text-xs text-gray-600">Tipo de plantilla</label>
-                  <select
-                    className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
-                    value={form.tipo}
-                    onChange={e => setForm({ ...form, tipo: e.target.value as TipoPlantilla })}
+                  <label className="text-xs text-slate-600">Archivo PDF de la plantilla</label>
+                  <div className="mt-1">
+                    <label className="text-tecnm-azul cursor-pointer underline">
+                      {pdfFile || form.pdfUrl ? "Cambiar PDF" : "Seleccionar PDF"}
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        className="hidden"
+                        onChange={(e) => handlePdf(e.target.files?.[0] ?? null)}
+                      />
+                    </label>
+                    <span className="ml-2 text-xs text-slate-500">
+                      Se usará como fondo del certificado y para generar constancias.
+                    </span>
+                  </div>
+                </div>
+
+                {/* Chips */}
+                <div>
+                  <p className="text-xs text-slate-600">Variables disponibles</p>
+                  <div className="mt-2 flex flex-wrap gap-2 select-none">
+                    {vars.map((tok) => {
+                      const on = enabled.has(tok);
+                      return (
+                        <button
+                          key={tok}
+                          draggable
+                          onDragStart={(e) => onDragStartChip(e, tok)}
+                          onClick={() => toggleToken(tok)}
+                          className={`px-3 py-1.5 rounded-full text-sm border ${
+                            on
+                              ? "bg-tecnm-azul text-white border-tecnm-azul"
+                              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                          }`}
+                          title="Clic para mostrar/ocultar en el lienzo. Arrastra al mensaje para insertar el token."
+                        >
+                          {tok}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-600">Mensaje base (usa los tokens)</label>
+                  <textarea
+                    ref={textareaRef}
+                    onDrop={onDropTextarea}
+                    onDragOver={(e) => e.preventDefault()}
+                    rows={4}
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    value={form.layout.mensajeBase}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        layout: { ...f.layout, mensajeBase: e.target.value },
+                      }))
+                    }
+                    placeholder={
+                      form.tipo ? mensajeDefault[form.tipo] : "Escribe el mensaje o elige un tipo…"
+                    }
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Se renderiza en el token{" "}
+                    <code className="px-1 bg-slate-100 rounded">{`{{MENSAJE}}`}</code>.
+                  </p>
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <Button
+                    onClick={() => {
+                      if (!form.nombre.trim())
+                        return alert("Escribe un nombre para la plantilla.");
+                      if (!form.tipo) return alert("Selecciona un tipo de plantilla.");
+                      if (!form.concursoId)
+                        return alert("Selecciona un concurso antes de guardar.");
+                      onSave({ ...form, _pdfFile: pdfFile });
+                      onClose();
+                    }}
                   >
-                    {(["Coordinador","Asesor","Integrante","Equipo"] as TipoPlantilla[]).map(t => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
+                    Guardar
+                  </Button>
+                  <Button variant="outline" onClick={onClose}>
+                    Cancelar
+                  </Button>
                 </div>
-
-                <div className="md:col-span-2">
-                  <label className="text-xs text-gray-600">Concurso</label>
-                  <select
-                    className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
-                    value={form.concursoId}
-                    onChange={e => setForm({ ...form, concursoId: e.target.value })}
-                  >
-                    {concursosMock.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div className="mt-3 text-xs text-gray-600">
-                <p className="font-medium">Variables disponibles:</p>
-                <div className="mt-1 flex flex-wrap gap-2">
-                  {vars.map(v => (
-                    <code key={v} className="rounded-md bg-gray-100 px-2 py-1">{v}</code>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mt-4 flex gap-2">
-                <Button
-                  onClick={() => {
-                    if (!form.nombre.trim()) return alert("Escribe un nombre para la plantilla.")
-                    onSave(form)
-                    onClose()
-                  }}
-                >
-                  Guardar
-                </Button>
-                <Button variant="outline" onClick={onClose}>Cancelar</Button>
               </div>
             </div>
 
-            {/* Preview */}
-            <div className="hidden md:block w-80">
-              <p className="text-xs text-gray-600 mb-2">Previsualización</p>
-              <div className="rounded-2xl border bg-white p-4 shadow-soft">
-                <div className="rounded-xl border p-4">
-                  <div className="text-center">
-                    <p className="text-[11px] text-gray-500">Tecnológico Nacional de México</p>
-                    <p className="text-sm font-semibold text-tecnm-azul">Instituto Tecnológico Superior de Puerto Peñasco</p>
-                    <p className="mt-2 text-lg font-bold">CONSTANCIA</p>
+            {/* Centro: visor + tokens */}
+            <div ref={centerRef} className="relative overflow-auto bg-transparent">
+              <div
+                className="relative mx-auto"
+                style={{ width: displayW, height: displayH }}
+                onClick={() => setActive(null)}
+              >
+                {pdfBytes && pdfBytes.byteLength > 0 ? (
+                  <PDFCanvas bytes={pdfBytes} displayWidth={displayW} />
+                ) : (
+                  <div className="absolute inset-0 grid place-items-center text-sm text-slate-500">
+                    <div>
+                      {form.pdfUrl
+                        ? "Cargando vista previa del PDF…"
+                        : "Selecciona un PDF para previsualizarlo aquí."}
+                    </div>
                   </div>
-                  <div className="mt-3 text-center">
-                    <p className="text-xs text-gray-600">Se otorga a</p>
-                    <p className="text-base font-semibold">Juan Pérez (ejemplo)</p>
-                    <p className="text-xs text-gray-600 mt-1">
-                      por su participación como <strong>{form.tipo}</strong> en el <strong><NombreConcurso id={form.concursoId} /></strong>.
-                    </p>
-                    <p className="text-[11px] text-gray-500 mt-3">Puerto Peñasco, {new Date().toLocaleDateString()}</p>
+                )}
+
+                {tokenKeys.map((tok) => {
+                  const b = box(tok);
+                  if (!b) return null;
+
+                  const x = Math.round(b.x * displayScale);
+                  const y = Math.round(b.y * displayScale);
+                  const w = Math.round(b.w * displayScale);
+                  const h = Math.round(b.h * displayScale);
+
+                  return (
+                    <Rnd
+                      key={tok}
+                      bounds="parent"
+                      position={{ x, y }}
+                      size={{ width: w, height: h }}
+                      onDragStop={(_e: any, d: { x: number; y: number }) =>
+                        patchBox(tok, {
+                          x: Math.round(d.x / displayScale),
+                          y: Math.round(d.y / displayScale),
+                        })
+                      }
+                      onResizeStop={(
+                        _e: any,
+                        _dir: any,
+                        refEl: HTMLElement,
+                        _delta: any,
+                        pos: { x: number; y: number }
+                      ) =>
+                        patchBox(tok, {
+                          w: Math.round(refEl.offsetWidth / displayScale),
+                          h: Math.round(refEl.offsetHeight / displayScale),
+                          x: Math.round(pos.x / displayScale),
+                          y: Math.round(pos.y / displayScale),
+                        })
+                      }
+                      dragGrid={[1, 1]}
+                      resizeGrid={[1, 1]}
+                      onClick={(e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        setActive(tok);
+                      }}
+                      style={{
+                        border:
+                          active === tok ? "2px dashed #2563eb" : "1px dashed rgba(2,6,23,.25)",
+                        background: "rgba(2,6,23,.02)",
+                        cursor: "move",
+                        zIndex: 2,
+                        userSelect: "none",
+                      }}
+                    >
+                      <div
+                        className="w-full h-full overflow-hidden flex items-center justify-center px-1"
+                        style={{
+                          color: b.color,
+                          fontWeight: b.bold ? 700 : 500,
+                          fontSize: b.size * displayScale,
+                          textAlign: b.align as any,
+                          fontFamily: b.font,
+                          lineHeight: 1.15,
+                          wordBreak: "break-word",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {tok === "{{MENSAJE}}" ? form.layout.mensajeBase : tok}
+                      </div>
+                    </Rnd>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Derecha: propiedades */}
+            <div className="pl-1 overflow-auto">
+              {!active || !activeBox ? (
+                <div className="rounded-xl border bg-white p-4 text-sm text-slate-600">
+                  Selecciona un token para editar su tamaño, alineado, color y tipografía.
+                </div>
+              ) : (
+                <div className="rounded-xl border bg-white p-4 text-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="font-medium">Propiedades de {active}</p>
+                    <button
+                      className="text-xs text-slate-500 underline"
+                      onClick={() => setActive(null)}
+                    >
+                      cerrar
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-slate-600">Tamaño</label>
+                      <input
+                        type="number"
+                        min={8}
+                        max={96}
+                        className="mt-1 w-full rounded-xl border px-2 py-1"
+                        value={activeBox.size}
+                        onChange={(e) => patchBox(active, { size: +e.target.value || 16 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Alineado</label>
+                      <select
+                        className="mt-1 w-full rounded-xl border px-2 py-1"
+                        value={activeBox.align}
+                        onChange={(e) => patchBox(active, { align: e.target.value as Align })}
+                      >
+                        <option value="left">left</option>
+                        <option value="center">center</option>
+                        <option value="right">right</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Color</label>
+                      <input
+                        type="color"
+                        className="mt-1 w-full h-9 rounded"
+                        value={activeBox.color}
+                        onChange={(e) => patchBox(active, { color: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Tipografía</label>
+                      <select
+                        className="mt-1 w-full rounded-xl border px-2 py-1"
+                        value={activeBox.font}
+                        onChange={(e) => patchBox(active, { font: e.target.value })}
+                      >
+                        {FUENTES.map((f) => (
+                          <option key={f} value={f}>
+                            {f}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="flex items-center gap-2 text-sm mt-1">
+                        <input
+                          type="checkbox"
+                          checked={activeBox.bold}
+                          onChange={(e) => patchBox(active, { bold: e.target.checked })}
+                        />
+                        <span>Negritas</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </Card>
       </motion.div>
     </AnimatePresence>
-  )
+  );
 }
 
-/* ------------------------------ Tarjeta ------------------------------ */
+/* =============================== Tarjeta =============================== */
 function TarjetaPlantilla({
   p,
   onEdit,
   onDuplicate,
   onDelete,
+  concursos,
 }: {
-  p: Plantilla
-  onEdit: (p: Plantilla) => void
-  onDuplicate: (p: Plantilla) => void
-  onDelete: (p: Plantilla) => void
+  p: Plantilla;
+  onEdit: (p: Plantilla) => void;
+  onDuplicate: (p: Plantilla) => void;
+  onDelete: (p: Plantilla) => void;
+  concursos: Concurso[];
 }) {
   const fecha = new Date(p.actualizadoEn).toLocaleString("es-MX", {
     year: "numeric",
@@ -215,91 +884,164 @@ function TarjetaPlantilla({
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  })
+  });
 
   return (
     <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
       <Card className="p-4 hover:shadow-md border border-gray-100 hover:border-gray-200 transition">
         <div className="flex gap-3">
-          {/* Avatar */}
           <div className="h-12 w-12 rounded-xl bg-tecnm-azul/10 grid place-items-center text-tecnm-azul font-bold shrink-0">
             {p.tipo.substring(0, 2).toUpperCase()}
           </div>
 
-          {/* Contenido */}
           <div className="flex-1 min-w-0">
-            {/* Fila 1: Título + chip */}
             <div className="flex items-center gap-2 min-w-0">
               <h3 className="font-semibold truncate">{p.nombre}</h3>
               <ChipTipo tipo={p.tipo} />
             </div>
 
-            {/* Fila 2: concurso + fecha */}
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
               <p className="text-sm text-gray-600 truncate">
-                <NombreConcurso id={p.concursoId} />
+                <NombreConcursoInline id={p.concursoId} concursos={concursos} />
               </p>
               <p className="text-xs text-gray-500 whitespace-nowrap">Actualizado el {fecha}</p>
             </div>
 
-            {/* Fila 3: acciones (siempre abajo) */}
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" onClick={() => onEdit(p)}>Editar</Button>
-              <Button size="sm" variant="outline" onClick={() => onDuplicate(p)}>Duplicar</Button>
-              <Button size="sm" variant="outline" onClick={() => alert("Descargar (pendiente)")}>Descargar</Button>
-              <Button size="sm" variant="outline" onClick={() => onDelete(p)}>Eliminar</Button>
+              <Button size="sm" variant="outline" onClick={() => onEdit(p)}>
+                Editar
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => onDuplicate(p)}>
+                Duplicar
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => alert("Descargar (pendiente)")}>
+                Descargar
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => onDelete(p)}>
+                Eliminar
+              </Button>
             </div>
           </div>
         </div>
       </Card>
     </motion.div>
-  )
+  );
 }
 
-/* ------------------------------ Página ------------------------------ */
+/* ================================ Página ================================ */
 export default function Plantillas() {
-  const [busqueda, setBusqueda] = useState("")
-  const [tab, setTab] = useState<TipoPlantilla | "Todas">("Todas")
-  const [concurso, setConcurso] = useState<string>("Todos")
-  const [modalOpen, setModalOpen] = useState(false)
-  const [editando, setEditando] = useState<Plantilla | undefined>(undefined)
-  const [plantillas, setPlantillas] = useState<Plantilla[]>(plantillasIniciales)
+  const [busqueda, setBusqueda] = useState("");
+  const [tab, setTab] = useState<TipoPlantilla | "Todas">("Todas");
+  const [concurso, setConcurso] = useState<string>("Todos");
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editando, setEditando] = useState<Plantilla | undefined>(undefined);
+
+  const [plantillas, setPlantillas] = useState<Plantilla[]>([]);
+  const [concursos, setConcursos] = useState<Concurso[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const cid = searchParams.get("concursoId");
+    if (cid) setConcurso(cid);
+  }, [searchParams]);
+
+  // Concursos
+  useEffect(() => {
+    const qy = query(collection(db, "Cursos"), orderBy("fechaInicio", "desc"));
+    const unsub = onSnapshot(qy, (snap) => {
+      const rows: Concurso[] = snap.docs.map((d) => ({
+        id: d.id,
+        nombre: (d.data().nombre || d.data().titulo || d.id) as string,
+      }));
+      setConcursos(rows);
+    });
+    return () => unsub();
+  }, []);
+
+  // Plantillas
+  useEffect(() => {
+    setLoading(true);
+    const col = collection(db, "Plantillas");
+    const qy =
+      concurso !== "Todos"
+        ? query(col, where("concursoId", "==", concurso), orderBy("actualizadoEn", "desc"))
+        : query(col, orderBy("actualizadoEn", "desc"));
+
+    const unsub = onSnapshot(
+      qy,
+      (snap) => {
+        const rows: Plantilla[] = snap.docs.map((d) => {
+          const data: any = d.data() || {};
+          const ts =
+            data.actualizadoEn instanceof Timestamp
+              ? data.actualizadoEn.toDate().toISOString()
+              : data.actualizadoEn || new Date().toISOString();
+          return {
+            id: d.id,
+            nombre: data.nombre ?? d.id,
+            tipo: data.tipo as TipoPlantilla,
+            concursoId: data.concursoId as string,
+            actualizadoEn: ts,
+            layout: data.layout as Layout,
+            pdfUrl: data.pdfUrl as string | undefined,
+          };
+        });
+        setPlantillas(rows);
+        setLoading(false);
+      },
+      () => setLoading(false)
+    );
+    return () => unsub();
+  }, [concurso]);
 
   const resultados = useMemo(() => {
-    const q = busqueda.trim().toLowerCase()
-    return plantillas.filter(p => {
+    const q = busqueda.trim().toLowerCase();
+    return plantillas.filter((p) => {
       const coincideTexto =
         !q ||
         p.nombre.toLowerCase().includes(q) ||
-        (concursosMock.find(c => c.id === p.concursoId)?.nombre.toLowerCase().includes(q) ?? false)
+        (concursos.find((c) => c.id === p.concursoId)?.nombre.toLowerCase().includes(q) ?? false);
+      const coincideTab = tab === "Todas" ? true : p.tipo === tab;
+      const coincideConcurso = concurso === "Todos" ? true : p.concursoId === concurso;
+      return coincideTexto && coincideTab && coincideConcurso;
+    });
+  }, [busqueda, tab, concurso, plantillas, concursos]);
 
-      const coincideTab = tab === "Todas" ? true : p.tipo === tab
-      const coincideConcurso = concurso === "Todos" ? true : p.concursoId === concurso
+  const abrirNuevo = () => {
+    setEditando(undefined);
+    setModalOpen(true);
+  };
+  const abrirEditar = (p: Plantilla) => {
+    setEditando(p);
+    setModalOpen(true);
+  };
 
-      return coincideTexto && coincideTab && coincideConcurso
-    })
-  }, [busqueda, tab, concurso, plantillas])
-
-  const abrirNuevo = () => { setEditando(undefined); setModalOpen(true) }
-  const abrirEditar = (p: Plantilla) => { setEditando(p); setModalOpen(true) }
+  // Subida PDF
+  const uploadPdfIfNeeded = async (pdfFile: File | null | undefined, concursoId: string) => {
+    if (!pdfFile) return undefined;
+    const path = `plantillas/${concursoId}/${Date.now()}-${pdfFile.name}`;
+    const r = ref(storage, path);
+    await uploadBytes(r, pdfFile);
+    return await getDownloadURL(r);
+  };
 
   return (
     <section className="space-y-5">
-      {/* Encabezado */}
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Plantillas</h1>
-          <p className="text-sm text-gray-600">Diseña y administra plantillas de constancias por concurso y tipo (coordinadores, asesores, integrantes y equipos).</p>
+          <p className="text-sm text-gray-600">Diseña y administra plantillas de constancias por concurso y tipo.</p>
         </div>
         <Button onClick={abrirNuevo}>Nueva plantilla</Button>
       </div>
 
-      {/* Barra de acciones */}
       <Card className="p-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          {/* Tabs */}
           <div className="flex items-center gap-2 overflow-auto">
-            {TABS.map((t) => (
+            {(["Todas", "Coordinador", "Asesor", "Integrante", "Equipo"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -314,15 +1056,16 @@ export default function Plantillas() {
             ))}
           </div>
 
-          {/* Filtros */}
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 shadow-sm">
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
+              {/* Ícono seguro */}
+              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" fill="none" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" strokeWidth="2" />
               </svg>
               <input
                 value={busqueda}
-                onChange={e => setBusqueda(e.target.value)}
+                onChange={(e) => setBusqueda(e.target.value)}
                 placeholder="Buscar plantilla o concurso…"
                 className="w-56 md:w-72 outline-none text-sm"
               />
@@ -330,85 +1073,107 @@ export default function Plantillas() {
 
             <select
               value={concurso}
-              onChange={e => setConcurso(e.target.value)}
+              onChange={(e) => setConcurso(e.target.value)}
               className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
             >
               <option value="Todos">Todos los concursos</option>
-              {concursosMock.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+              {concursos.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
+              ))}
             </select>
 
-            <Button variant="outline" onClick={() => { setBusqueda(""); setConcurso("Todos"); setTab("Todas") }}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setBusqueda("");
+                setConcurso("Todos");
+                setTab("Todas");
+              }}
+            >
               Restablecer filtros
             </Button>
           </div>
         </div>
       </Card>
 
-      {/* Resultados */}
-      <div className="text-sm text-gray-600">Resultados: <strong>{resultados.length}</strong></div>
-
-      {resultados.length === 0 ? (
-        <Card className="p-8 text-center text-sm text-gray-600">
-          No hay plantillas con esos filtros.
-        </Card>
+      {loading ? (
+        <Card className="p-8 text-center text-sm text-gray-600">Cargando plantillas…</Card>
+      ) : resultados.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-gray-600">No hay plantillas con esos filtros.</Card>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {resultados.map(p => (
-            <TarjetaPlantilla
-              key={p.id}
-              p={p}
-              onEdit={abrirEditar}
-              onDuplicate={(pl) => {
-                const copia: Plantilla = {
-                  ...pl,
-                  id: crypto.randomUUID(),
-                  nombre: `${pl.nombre} (copia)`,
-                  actualizadoEn: new Date().toISOString(),
-                }
-                setPlantillas(prev => [copia, ...prev])
-              }}
-              onDelete={(pl) => {
-                if (!confirm(`¿Eliminar la plantilla "${pl.nombre}"?`)) return
-                setPlantillas(prev => prev.filter(x => x.id !== pl.id))
-              }}
-            />
-          ))}
-        </div>
+        <>
+          <div className="text-sm text-gray-600">
+            Resultados: <strong>{resultados.length}</strong>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {resultados.map((p) => (
+              <TarjetaPlantilla
+                key={p.id}
+                p={p}
+                concursos={concursos}
+                onEdit={abrirEditar}
+                onDuplicate={async (pl) => {
+                  const payload = {
+                    nombre: `${pl.nombre} (copia)`,
+                    tipo: pl.tipo,
+                    concursoId: pl.concursoId,
+                    actualizadoEn: serverTimestamp(),
+                    layout: pl.layout,
+                    pdfUrl: pl.pdfUrl ?? null,
+                  };
+                  const refDoc = await addDoc(collection(db, "Plantillas"), payload as any);
+                  await updateDoc(fsDoc(db, "Cursos", pl.concursoId), {
+                    plantillas: arrayUnion(refDoc.id),
+                  }).catch(() => {});
+                }}
+                onDelete={async (pl) => {
+                  if (!confirm(`¿Eliminar la plantilla "${pl.nombre}"?`)) return;
+                  await deleteDoc(fsDoc(db, "Plantillas", pl.id));
+                }}
+              />
+            ))}
+          </div>
+        </>
       )}
 
-      {/* Modal */}
       <ModalPlantilla
         open={modalOpen}
-        initial={editando ? {
-          id: editando.id,
-          nombre: editando.nombre,
-          tipo: editando.tipo,
-          concursoId: editando.concursoId
-        } : undefined}
+        concursos={concursos}
+        initial={
+          editando
+            ? {
+                id: editando.id,
+                nombre: editando.nombre,
+                tipo: editando.tipo,
+                concursoId: editando.concursoId,
+                layout: editando.layout,
+                pdfUrl: editando.pdfUrl,
+              }
+            : undefined
+        }
         onClose={() => setModalOpen(false)}
-        onSave={(f) => {
+        onSave={async (f) => {
+          const newPdfUrl = await uploadPdfIfNeeded(f._pdfFile, f.concursoId);
+          const base: any = {
+            nombre: f.nombre,
+            tipo: f.tipo,
+            concursoId: f.concursoId,
+            layout: f.layout,
+            pdfUrl: newPdfUrl ?? f.pdfUrl ?? null,
+            actualizadoEn: serverTimestamp(),
+          };
           if (f.id) {
-            // editar
-            setPlantillas(prev => prev.map(p => p.id === f.id ? ({
-              ...p,
-              nombre: f.nombre,
-              tipo: f.tipo,
-              concursoId: f.concursoId,
-              actualizadoEn: new Date().toISOString(),
-            }) : p))
+            await updateDoc(fsDoc(db, "Plantillas", f.id), base);
           } else {
-            // crear
-            const nuevo: Plantilla = {
-              id: crypto.randomUUID(),
-              nombre: f.nombre,
-              tipo: f.tipo,
-              concursoId: f.concursoId,
-              actualizadoEn: new Date().toISOString(),
-            }
-            setPlantillas(prev => [nuevo, ...prev])
+            const docRef = await addDoc(collection(db, "Plantillas"), base);
+            await updateDoc(fsDoc(db, "Cursos", f.concursoId), {
+              plantillas: arrayUnion(docRef.id),
+            }).catch(() => {});
           }
         }}
       />
     </section>
-  )
+  );
 }

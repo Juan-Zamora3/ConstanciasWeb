@@ -7,7 +7,7 @@ import Home from "../pages/Home"
 import Concursos from "../pages/Concursos"
 import Plantillas from "../pages/Plantillas"
 import Constancias from "../pages/Constancias"
-
+import Asistencias from "../pages/Asistencias"
 // Constructor y público
 import FormularioBuilder from "../pages/FormularioBuilder"
 import FormularioPublico from "../pages/FormularioPublico"
@@ -27,6 +27,7 @@ export const router = createBrowserRouter([
       { path: "concursos/:concursoId/equipos", element: <Equipos /> },
       { path: "concursos/:concursoId/equipos/:equipoId/participantes", element: <Participantes /> },
       { path: "plantillas", element: <Plantillas /> },
+       { path: "asistencias", element: <Asistencias /> },
       { path: "constancias", element: <Constancias /> },
 
       // Builder (con navbar)

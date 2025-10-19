@@ -406,7 +406,7 @@ function EditCursoModal({
   )
 }
 
-/* ---------------- NUEVO: Modal AÑADIR COORDINADOR (con teléfono) ---------------- */
+/* ---------------- NUEVO: Modal AÑADIR COORDINADOR ---------------- */
 function AddCoordinadorModal({
   open,
   onClose,
@@ -420,14 +420,14 @@ function AddCoordinadorModal({
   const [nombre, setNombre] = useState("")
   const [correo, setCorreo] = useState("")
   const [cargo, setCargo] = useState("Coordinador")
-  const [telefono, setTelefono] = useState("") // 👈 nuevo
+  const [telefono, setTelefono] = useState("")
 
   useEffect(() => {
     if (!open) {
       setNombre("")
       setCorreo("")
       setCargo("Coordinador")
-      setTelefono("") // reset
+      setTelefono("")
     }
   }, [open])
 
@@ -445,7 +445,7 @@ function AddCoordinadorModal({
         nombre: nombre.trim(),
         email: correo.trim(),
         cargo: cargo.trim(),
-        telefono: telefono.trim() || null, // 👈 se guarda si viene
+        telefono: telefono.trim() || null,
         creadoEn: serverTimestamp(),
       })
       onClose()
@@ -585,7 +585,7 @@ function TarjetaConcurso({
   c,
   onOpenEquipos,
   onEdit,
-  onAddCoord, // 👈 botón nuevo
+  onAddCoord,
 }: {
   c: Concurso
   onOpenEquipos: (c: Concurso) => void
@@ -638,6 +638,16 @@ function TarjetaConcurso({
             </Button>
             <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => onAddCoord(c)}>
               Añadir coordinador
+            </Button>
+
+            {/* 👇 NUEVO: botón para asistencia & pago */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+              onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}
+            >
+              Asistencia & Pago
             </Button>
           </div>
 
@@ -741,8 +751,6 @@ export default function Concursos() {
       console.error(e); setError("Error al inicializar la lectura de concursos."); setCargando(false)
     }
   }, [])
-
-  const TABS: Array<EstadoConcurso | "Todos"> = ["Todos", "Activo", "Próximo", "Finalizado"]
 
   const categorias: string[] = useMemo(() => {
     const set = new Set<string>(concursos.map((c) => c.categoria || "General"))

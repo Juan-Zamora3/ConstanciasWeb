@@ -1,182 +1,590 @@
-import { useMemo, useState } from "react"
-import { motion } from "framer-motion"
-import { Card } from "../components/ui/Card"
-import Button from "../components/ui/Button"
+// src/pages/Constancias.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Link, useSearchParams } from "react-router-dom";
+import { Card } from "../components/ui/Card";
+import Button from "../components/ui/Button";
 
-/* ===== Helpers y Tipos ===== */
-const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36)
-const nombreConcurso = (id: string, lista: Concurso[]) => lista.find((c) => c.id === id)?.nombre ?? "—"
+import { db } from "../servicios/firebaseConfig";
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  getDocs,
+} from "firebase/firestore";
+import type { Timestamp } from "firebase/firestore";
 
-type TipoPlantilla = "Coordinador" | "Asesor" | "Integrante" | "Equipo"
-type Concurso = { id: string; nombre: string }
-type Plantilla = { id: string; nombre: string; tipo: TipoPlantilla; concursoId: string }
+import {
+  renderCertToPdfBytes,
+  bytesToPdfBlob,
+  bytesToZipBlob,
+  zipMany,
+  downloadBlob,
+  buildTokenMap,
+  u8ToBase64,
+  type Layout,
+} from "../utils/certificados";
 
-type Destinatario = {
-  id: string
-  nombre: string
-  equipo?: string
-  puesto?: string
-  lugar?: string
-  email?: string
-}
+/* =================== Tipos =================== */
+type TipoPlantilla = "Coordinador" | "Asesor" | "Integrante" | "Equipo";
+type Concurso = { id: string; nombre: string; categoria?: string; lugar?: string };
+type Plantilla = {
+  id: string;
+  nombre: string;
+  tipo: TipoPlantilla;
+  concursoId: string;
+  actualizadoEn: string;
+  layout: Layout;
+  pdfUrl?: string;
+};
+type Participante = {
+  id: string;
+  nombre: string;
+  email?: string;
+  equipo?: string;
+  puesto?: string; // "Líder" | "Integrante" | "Asesor" | "Coordinador" | ...
+};
 
-type Emision = {
-  id: string
-  plantillaId: string
-  plantillaNombre: string
-  tipo: TipoPlantilla
-  concursoId: string
-  total: number
-  fecha: string // ISO
-  estado: "Emitidas"
-}
-
-type EstadoCorreo = "en-cola" | "enviado" | "error"
+type EstadoCorreo = "en-cola" | "enviado" | "error";
 type LogCorreo = {
-  id: string
-  timestamp: string
-  destinatario: string
-  email?: string
-  plantillaNombre: string
-  concursoId: string
-  estado: EstadoCorreo
-  errorMsg?: string
-}
+  id: string;
+  timestamp: string;
+  destinatario: string;
+  email?: string;
+  plantillaId: string;
+  plantillaNombre: string;
+  concursoId: string;
+  estado: EstadoCorreo;
+  errorMsg?: string;
+  payload: {
+    destinatario: {
+      nombre: string;
+      email?: string;
+      equipo?: string;
+      puesto?: string;
+    };
+  };
+};
 
-const chipCorreo: Record<EstadoCorreo, string> = {
-  "en-cola": "bg-amber-100 text-amber-700",
-  enviado: "bg-green-100 text-green-700",
-  error: "bg-red-100 text-red-700",
-}
+/* =================== Helpers =================== */
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const sanitize = (s: string) => (s || "").replace(/\s+/g, "_").replace(/[^\w.-]/g, "");
+const nombreConcurso = (id: string, lista: Concurso[]) => lista.find((c) => c.id === id)?.nombre ?? "—";
 
-/* ===== Mock data ===== */
-const concursosMock: Concurso[] = [
-  { id: "bd2025", nombre: "Concurso de Bases de Datos" },
-  { id: "prog2025", nombre: "Hackathon de Programación" },
-  { id: "robot2025", nombre: "Torneo de Robótica" },
-]
+const API_BASE = (import.meta.env.VITE_API_URL as string) || "";
+const requireApiBase = () => {
+  if (!API_BASE) throw new Error("Falta configurar VITE_API_URL en el .env del frontend");
+};
 
-const plantillasMock: Plantilla[] = [
-  { id: "p1", nombre: "Coordinador general", tipo: "Coordinador", concursoId: "bd2025" },
-  { id: "p2", nombre: "Constancia Asesor", tipo: "Asesor", concursoId: "prog2025" },
-  { id: "p3", nombre: "Integrante estándar", tipo: "Integrante", concursoId: "robot2025" },
-  { id: "p4", nombre: "Equipo Campeón", tipo: "Equipo", concursoId: "robot2025" },
-]
+const isValidPerson = (raw?: string) => {
+  const s = (raw || "").toString().trim();
+  if (!s) return false;
+  const bad = /^(?:n\/?a|na|ningun[oa]?|no\s+aplica|noaplica|s\/?d|-|—|\.|ninguno|ninguna)$/i;
+  if (bad.test(s)) return false;
+  if (!/[a-záéíóúüñ]/i.test(s)) return false;
+  return true;
+};
 
-const varsPorTipo: Record<TipoPlantilla, string[]> = {
-  Coordinador: ["{{NOMBRE}}", "{{CARGO}}", "{{CONCURSO}}", "{{FECHA}}"],
-  Asesor: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{FECHA}}"],
-  Integrante: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{PUESTO}}", "{{FECHA}}"],
-  Equipo: ["{{NOMBRE_EQUIPO}}", "{{CONCURSO}}", "{{CATEGORIA}}", "{{LUGAR}}", "{{FECHA}}"],
-}
-
-/* ===== Página ===== */
+/* =================== Página =================== */
 export default function Constancias() {
-  // Filtros
-  const [concursoId, setConcursoId] = useState<string>("Todos")
-  const [tipo, setTipo] = useState<TipoPlantilla | "Todos">("Todos")
+  const [search] = useSearchParams();
 
-  // Plantillas filtradas y selección
-  const plantillasFiltradas = useMemo(() => {
-    return plantillasMock.filter(
-      (p) => (concursoId === "Todos" || p.concursoId === concursoId) && (tipo === "Todos" || p.tipo === tipo)
-    )
-  }, [concursoId, tipo])
+  /* ----- Estado principal ----- */
+  const [concursos, setConcursos] = useState<Concurso[]>([]);
+  const [concursoId, setConcursoId] = useState<string>(""); // vacío = ninguno
+  const [plantillas, setPlantillas] = useState<Plantilla[]>([]);
+  const [plantillaId, setPlantillaId] = useState<string>("");
 
-  const [plantillaId, setPlantillaId] = useState<string>(plantillasFiltradas[0]?.id ?? "")
-  const plantilla = plantillasMock.find((p) => p.id === plantillaId)
-  const plantillaTipo: TipoPlantilla | undefined = plantilla?.tipo
+  const [participantes, setParticipantes] = useState<Participante[]>([]);
+  const [sel, setSel] = useState<Record<string, boolean>>({});
 
-  // Columnas extra según tipo
-  const columnasExtra: string[] = useMemo(() => {
-    switch (plantillaTipo) {
-      case "Equipo":
-        return ["lugar"]
-      case "Integrante":
-      case "Asesor":
-        return ["equipo", "puesto"]
-      case "Coordinador":
-        return ["puesto"]
-      default:
-        return []
+  // Filtros secundarios
+  const [busq, setBusq] = useState("");
+  const [fEquipo, setFEquipo] = useState<string>("Todos");
+  const [fRol, setFRol] = useState<"Todos" | "Líder" | "Integrante" | "Asesor" | "Coordinador">("Todos");
+
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [histOpen, setHistOpen] = useState(false);
+  const [confirmSendOpen, setConfirmSendOpen] = useState(false);
+
+  const [correoLogs, setCorreoLogs] = useState<LogCorreo[]>([]);
+
+  const [emailCfg, setEmailCfg] = useState(() => ({
+    fromName: localStorage.getItem("mail.fromName") ?? "Constancias ISC-ITSPP",
+    fromEmail: localStorage.getItem("mail.fromEmail") ?? "",
+    subjectTpl: localStorage.getItem("mail.subjectTpl") ?? "Constancia - {{CONCURSO}} - {{NOMBRE}}",
+    bodyTpl:
+      localStorage.getItem("mail.bodyTpl") ??
+      "Hola {{NOMBRE}},\n\nAdjuntamos tu constancia del {{CONCURSO}}.\n\n¡Gracias por tu participación!",
+  }));
+
+  // refs para insertar tokens en caret
+  const subjectRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  /* ----- Arranque: leer ?concursoId= si viene ----- */
+  useEffect(() => {
+    const cid = (search.get("concursoId") || "").trim();
+    if (cid) setConcursoId(cid);
+  }, [search]);
+
+  /* ----- Concursos (siempre) ----- */
+  useEffect(() => {
+    const qCursos = query(collection(db, "Cursos"));
+    const unsub = onSnapshot(qCursos, (snap) => {
+      const rows: Concurso[] = snap.docs.map((d) => {
+        const data: any = d.data() || {};
+        return {
+          id: d.id,
+          nombre: (data.nombre || data.titulo || d.id) as string,
+          categoria: data.categoria || data.categoría || undefined,
+          lugar: data.lugar || undefined,
+        };
+      });
+      setConcursos(rows);
+    });
+    return () => unsub();
+  }, []);
+
+  /* ----- Plantillas: sólo cuando hay concurso seleccionado ----- */
+  useEffect(() => {
+    setPlantillas([]);
+    setPlantillaId("");
+    if (!concursoId) return;
+
+    const qPlant = query(collection(db, "Plantillas"), where("concursoId", "==", concursoId));
+    const unsub = onSnapshot(qPlant, (snap) => {
+      const rows: Plantilla[] = snap.docs
+        .map((d) => {
+          const data: any = d.data() || {};
+          const ts =
+            data.actualizadoEn?.toDate
+              ? (data.actualizadoEn as Timestamp).toDate().toISOString()
+              : (data.actualizadoEn ?? new Date().toISOString());
+          return {
+            id: d.id,
+            nombre: data.nombre ?? d.id,
+            tipo: data.tipo as TipoPlantilla,
+            concursoId: data.concursoId as string,
+            actualizadoEn: ts,
+            layout: data.layout as Layout,
+            pdfUrl: data.pdfUrl ?? undefined,
+          };
+        })
+        .sort((a, b) => b.actualizadoEn.localeCompare(a.actualizadoEn));
+      setPlantillas(rows);
+      setPlantillaId(rows[0]?.id ?? "");
+    });
+
+    return () => unsub();
+  }, [concursoId]);
+
+  const plantilla = plantillas.find((p) => p.id === plantillaId);
+  const plantillaTipo: TipoPlantilla | undefined = plantilla?.tipo;
+  const concursoSel = concursos.find((c) => c.id === concursoId);
+
+  /* ----- Participantes: encuestas + coordinadores del concurso seleccionado ----- */
+  useEffect(() => {
+    setParticipantes([]);
+    setSel({});
+    setFEquipo("Todos");
+    setFRol("Todos");
+    setBusq("");
+    if (!concursoId) return;
+
+    (async () => {
+      try {
+        const todos: Participante[] = [];
+
+        // 1) Participantes desde encuestas
+        const encuestasRef = collection(db, "encuestas");
+        const qEnc = query(encuestasRef, where("cursoId", "==", concursoId));
+        const encuestasSnap = await getDocs(qEnc);
+
+        for (const enc of encuestasSnap.docs) {
+          const rRef = collection(enc.ref, "respuestas");
+          const rSnap = await getDocs(rRef);
+
+          rSnap.forEach((doc) => {
+            const data: any = doc.data() || {};
+            const preset = (data.preset || {}) as any;
+            const custom = (data.custom || {}) as any;
+
+            const equipo = preset.nombreEquipo || data.nombreEquipo || "";
+            const lider = preset.nombreLider || data.nombreLider || "";
+            const integrantesArr: string[] = Array.isArray(preset.integrantes)
+              ? preset.integrantes
+              : Array.isArray(data.integrantes)
+              ? data.integrantes
+              : [];
+
+            const asesor =
+              data.maestroAsesor ||
+              preset.maestroAsesor ||
+              custom.maestroAsesor ||
+              custom.asesor ||
+              (typeof custom.p1 === "string" && /asesor/i.test(custom.p1) ? custom.p1 : "");
+
+            if (isValidPerson(lider)) {
+              todos.push({
+                id: `${doc.id}-lider`,
+                nombre: lider,
+                email: data.emailLider || data.correo || "",
+                equipo,
+                puesto: "Líder",
+              });
+            }
+
+            for (const n of integrantesArr) {
+              if (!isValidPerson(n)) continue;
+              todos.push({
+                id: `${doc.id}-int-${n}-${uid()}`,
+                nombre: n,
+                email: "",
+                equipo,
+                puesto: "Integrante",
+              });
+            }
+
+            if (isValidPerson(asesor)) {
+              todos.push({
+                id: `${doc.id}-asesor`,
+                nombre: asesor,
+                email: data.emailAsesor || "",
+                equipo,
+                puesto: "Asesor",
+              });
+            }
+          });
+        }
+
+        // 2) Coordinadores desde colección "coordinadores" (por cursoId)
+        const coordRef = collection(db, "coordinadores");
+        const qCoord = query(coordRef, where("cursoId", "==", concursoId));
+        const coordSnap = await getDocs(qCoord);
+        coordSnap.forEach((doc) => {
+          const data: any = doc.data() || {};
+          const nombre = data.nombre || data.Nombres || "";
+          if (!isValidPerson(nombre)) return;
+          todos.push({
+            id: `coord-${doc.id}`,
+            nombre,
+            email: data.email || data.correo || "",
+            equipo: "", // no aplica
+            puesto: "Coordinador",
+          });
+        });
+
+        // normalizar y ordenar
+        const unique = new Map<string, Participante>();
+        for (const p of todos) {
+          const key = `${(p.nombre || "").trim().toLowerCase()}|${(p.equipo || "").trim().toLowerCase()}|${p.puesto}`;
+          if (!unique.has(key)) unique.set(key, p);
+        }
+
+        setParticipantes(
+          Array.from(unique.values()).sort((a, b) => {
+            const ae = a.equipo || "";
+            const be = b.equipo || "";
+            return (
+              ae.localeCompare(be) ||
+              (a.puesto || "").localeCompare(b.puesto || "") ||
+              a.nombre.localeCompare(b.nombre)
+            );
+          })
+        );
+      } catch (e) {
+        console.error("Error leyendo participantes:", e);
+        setParticipantes([]);
+      }
+    })();
+  }, [concursoId]);
+
+  /* ----- Derivados UI ----- */
+  const equiposDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of participantes) if (p.equipo && p.equipo.trim()) set.add(p.equipo.trim());
+    return ["Todos", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [participantes]);
+
+  const participantesFiltrados = useMemo(() => {
+    let arr = participantes;
+
+    if (fEquipo !== "Todos") arr = arr.filter((p) => (p.equipo || "") === fEquipo);
+    if (fRol !== "Todos") arr = arr.filter((p) => (p.puesto || "") === fRol);
+
+    const term = busq.trim().toLowerCase();
+    if (term) {
+      arr = arr.filter(
+        (p) =>
+          (p.nombre || "").toLowerCase().includes(term) ||
+          (p.equipo || "").toLowerCase().includes(term) ||
+          (p.puesto || "").toLowerCase().includes(term)
+      );
     }
-  }, [plantillaTipo])
+    return arr;
+  }, [participantes, fEquipo, fRol, busq]);
 
-  // Destinatarios
-  const [destinatarios, setDestinatarios] = useState<Destinatario[]>([{ id: uid(), nombre: "", email: "" }])
+  const seleccionados = participantesFiltrados.filter((p) => sel[p.id]);
+  const tieneAlgoSeleccionado = seleccionados.length > 0;
 
-  const agregarFila = () => setDestinatarios((prev) => [...prev, { id: uid(), nombre: "", email: "" }])
-  const actualizar = (id: string, campo: keyof Destinatario, valor: string) =>
-    setDestinatarios((prev) => prev.map((d) => (d.id === id ? { ...d, [campo]: valor } : d)))
-  const eliminarFila = (id: string) => setDestinatarios((prev) => prev.filter((d) => d.id !== id))
-  const limpiarFormulario = () => setDestinatarios([{ id: uid(), nombre: "", email: "" }])
+  const varsPorTipo: Record<TipoPlantilla, string[]> = {
+    Coordinador: ["{{NOMBRE}}", "{{CARGO}}", "{{CONCURSO}}", "{{FECHA}}", "{{MENSAJE}}"],
+    Asesor: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{FECHA}}", "{{MENSAJE}}"],
+    Integrante: ["{{NOMBRE}}", "{{CONCURSO}}", "{{EQUIPO}}", "{{FECHA}}", "{{MENSAJE}}"],
+    Equipo: ["{{NOMBRE_EQUIPO}}", "{{CONCURSO}}", "{{CATEGORIA}}", "{{LUGAR}}", "{{FECHA}}", "{{MENSAJE}}"],
+  };
 
-  // Emisiones (mock) + Logs de correo
-  const [emisiones, setEmisiones] = useState<Emision[]>([])
-  const [correoLogs, setCorreoLogs] = useState<LogCorreo[]>([])
+  const tokensDisponibles = useMemo<string[]>(() => {
+    if (!plantilla) return ["{{NOMBRE}}", "{{CONCURSO}}", "{{FECHA}}"];
+    return varsPorTipo[plantilla.tipo];
+  }, [plantilla]);
 
-  const emitir = () => {
-    if (!plantilla) return alert("Selecciona una plantilla.")
-    if (destinatarios.some((d) => !d.nombre.trim())) return alert("Completa el nombre de todos los destinatarios.")
+  const persistEmailCfg = () => {
+    localStorage.setItem("mail.fromName", emailCfg.fromName);
+    localStorage.setItem("mail.fromEmail", emailCfg.fromEmail);
+    localStorage.setItem("mail.subjectTpl", emailCfg.subjectTpl);
+    localStorage.setItem("mail.bodyTpl", emailCfg.bodyTpl);
+  };
 
-    // 1) Registrar emisión (resumen)
-    const nueva: Emision = {
-      id: uid(),
-      plantillaId: plantilla.id,
-      plantillaNombre: plantilla.nombre,
-      tipo: plantilla.tipo,
-      concursoId: plantilla.concursoId,
-      total: destinatarios.length,
-      fecha: new Date().toISOString(),
-      estado: "Emitidas",
+  /* ======= Drag & Drop de tokens ======= */
+  const tokenDragStart = (t: string) => (e: React.DragEvent) => {
+    e.dataTransfer.setData("text/plain", t);
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const dropInto =
+    (field: "subjectTpl" | "bodyTpl") =>
+    (e: React.DragEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      e.preventDefault();
+      const token = e.dataTransfer.getData("text/plain");
+      if (!token) return;
+
+      const target = e.currentTarget;
+      const start = (target as any).selectionStart ?? 0;
+      const end = (target as any).selectionEnd ?? start;
+
+      setEmailCfg((prev) => {
+        const curr = prev[field] as string;
+        const next = curr.slice(0, start) + token + curr.slice(end);
+        return { ...prev, [field]: next };
+      });
+
+      // restaurar caret después de actualizar estado
+      requestAnimationFrame(() => {
+        const pos = start + token.length;
+        target.focus();
+        try {
+          (target as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(pos, pos);
+        } catch {}
+      });
+    };
+
+  /* =================== Acciones =================== */
+  const preview = async () => {
+    if (!plantilla || !concursoSel) return alert("Selecciona concurso y plantilla.");
+    const base = seleccionados[0] || participantesFiltrados[0] || participantes[0];
+    if (!base) return alert("No hay integrantes para previsualizar.");
+
+    try {
+      const destinatario =
+        plantilla.tipo === "Equipo"
+          ? { nombre: base.equipo || "", equipo: base.equipo || "" }
+          : { nombre: base.nombre, equipo: base.equipo, puesto: base.puesto, email: base.email };
+
+      const bytes = await renderCertToPdfBytes({
+        plantilla,
+        concurso: concursoSel,
+        destinatario,
+      });
+      const url = URL.createObjectURL(bytesToPdfBlob(bytes));
+      setPreviewUrl(url);
+    } catch (e: any) {
+      console.error(e);
+      alert("Error generando previsualización: " + e.message);
     }
-    setEmisiones((prev) => [nueva, ...prev])
+  };
 
-    // 2) Registrar logs "en-cola"
-    const ahora = new Date().toISOString()
-    const nuevosLogs: LogCorreo[] = destinatarios.map((d) => ({
-      id: uid(),
-      timestamp: ahora,
-      destinatario: d.nombre,
-      email: d.email,
-      plantillaNombre: plantilla.nombre,
-      concursoId: plantilla.concursoId,
-      estado: "en-cola",
-    }))
-    setCorreoLogs((prev) => [...nuevosLogs, ...prev])
+  const descargarSeleccionados = async () => {
+    if (!plantilla || !concursoSel) return alert("Selecciona concurso y plantilla.");
+    if (!tieneAlgoSeleccionado) return alert("Selecciona al menos un integrante.");
 
-    // 3) Simular envío (a los 1.2s cambia estado aleatoriamente)
-    setTimeout(() => {
-      setCorreoLogs((prev) =>
-        prev.map((log) =>
-          nuevosLogs.some((n) => n.id === log.id)
-            ? {
-                ...log,
-                estado: Math.random() < 0.95 ? "enviado" : "error",
-                errorMsg: Math.random() < 0.95 ? undefined : "SMTP rechazó el destinatario",
-              }
-            : log
-        )
-      )
-    }, 1200)
+    try {
+      const files: { filename: string; bytes: Uint8Array }[] = [];
 
-    alert(`Se emitieron ${destinatarios.length} constancias y se inició el envío por correo (simulado).`)
-    limpiarFormulario()
-  }
+      if (plantilla.tipo === "Equipo") {
+        const equipos = Array.from(new Set(seleccionados.map((p) => p.equipo || "").filter(Boolean)));
+        if (equipos.length === 0) return alert("No se detectaron equipos en la selección.");
+        for (const eq of equipos) {
+          // eslint-disable-next-line no-await-in-loop
+          const bytes = await renderCertToPdfBytes({
+            plantilla,
+            concurso: concursoSel,
+            destinatario: { nombre: eq, equipo: eq },
+          });
+          files.push({ filename: `${sanitize(plantilla.nombre)}_${sanitize(eq)}.pdf`, bytes });
+        }
+      } else {
+        for (const p of seleccionados) {
+          // eslint-disable-next-line no-await-in-loop
+          const bytes = await renderCertToPdfBytes({
+            plantilla,
+            concurso: concursoSel,
+            destinatario: { nombre: p.nombre, email: p.email, equipo: p.equipo, puesto: p.puesto },
+          });
+          files.push({ filename: `${sanitize(plantilla.nombre)}_${sanitize(p.nombre)}.pdf`, bytes });
+        }
+      }
 
+      if (files.length === 1) {
+        downloadBlob(bytesToPdfBlob(files[0].bytes), files[0].filename);
+      } else {
+        const zipBytes = await zipMany(files);
+        downloadBlob(bytesToZipBlob(zipBytes), `${sanitize(plantilla.nombre)}.zip`);
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert("Error al descargar: " + e.message);
+    }
+  };
+
+  const enviarSeleccionados = async () => {
+    if (!plantilla || !concursoSel) return alert("Selecciona concurso y plantilla.");
+    if (!tieneAlgoSeleccionado) return alert("Selecciona al menos un integrante.");
+
+    setConfirmSendOpen(false);
+    for (const p of seleccionados) {
+      // eslint-disable-next-line no-await-in-loop
+      await enviarUno(p);
+    }
+  };
+
+  const enviarUno = async (p: Participante) => {
+    try {
+      requireApiBase();
+      if (!plantilla) throw new Error("Plantilla no disponible");
+      if (!p.email) throw new Error("El destinatario no tiene email");
+
+      const dest = { nombre: p.nombre, email: p.email, equipo: p.equipo, puesto: p.puesto };
+      const tokens = buildTokenMap({ plantilla, concurso: concursoSel, destinatario: dest });
+      const subject = Object.entries(tokens).reduce((acc, [k, v]) => acc.replaceAll(k, v ?? ""), emailCfg.subjectTpl ?? "");
+      const body = Object.entries(tokens).reduce((acc, [k, v]) => acc.replaceAll(k, v ?? ""), emailCfg.bodyTpl ?? "");
+
+      const bytes = await renderCertToPdfBytes({ plantilla, concurso: concursoSel, destinatario: dest });
+      const b64 = u8ToBase64(bytes);
+
+      const r = await fetch(`${API_BASE}/EnviarCorreo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          Correo: p.email,
+          Nombres: p.nombre,
+          Puesto: p.puesto || "",
+          pdf: b64,
+          mensajeCorreo: body,
+          Asunto: subject,
+          FromEmail: emailCfg.fromEmail || undefined,
+          FromName: emailCfg.fromName || undefined,
+        }),
+      });
+      const data = await r.json();
+      const ok = r.ok;
+
+      setCorreoLogs((prev) => [
+        {
+          id: uid(),
+          timestamp: new Date().toISOString(),
+          destinatario: p.nombre,
+          email: p.email,
+          plantillaId: plantilla.id,
+          plantillaNombre: plantilla.nombre,
+          concursoId: concursoSel?.id || "",
+          estado: ok ? "enviado" : "error",
+          errorMsg: ok ? undefined : data?.detail || data?.error || "Error al enviar correo",
+          payload: { destinatario: dest },
+        },
+        ...prev,
+      ]);
+
+      if (!ok) throw new Error(data?.detail || data?.error || "Error al enviar correo");
+    } catch (e: any) {
+      setCorreoLogs((prev) => [
+        {
+          id: uid(),
+          timestamp: new Date().toISOString(),
+          destinatario: p.nombre,
+          email: p.email,
+          plantillaId: plantilla?.id || "",
+          plantillaNombre: plantilla?.nombre || "",
+          concursoId: concursoSel?.id || "",
+          estado: "error",
+          errorMsg: e.message,
+          payload: { destinatario: { nombre: p.nombre, email: p.email, equipo: p.equipo, puesto: p.puesto } },
+        },
+        ...prev,
+      ]);
+    }
+  };
+
+  const toggleAll = (checked: boolean) => {
+    if (!checked) return setSel({});
+    const map: Record<string, boolean> = {};
+    for (const p of participantesFiltrados) map[p.id] = true;
+    setSel(map);
+  };
+
+  /* =================== UI =================== */
   return (
     <section className="space-y-5">
-      {/* Título */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Constancias</h1>
-          <p className="text-sm text-gray-600">Emite constancias por concurso, tipo y plantilla.</p>
+      {/* HERO */}
+      <div className="rounded-2xl bg-gradient-to-r from-[#143d6e] to-[#143563] text-white px-5 py-4 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight">Constancias</h1>
+            <p className="text-sm opacity-90">
+              Selecciona una plantilla, elige integrantes del concurso y genera/manda constancias.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              className="rounded-full bg-white/5 hover:bg-white/10 border-white/60 text-white"
+              onClick={() => setHistOpen(true)}
+            >
+              Historial de correos
+            </Button>
+            <Button
+              variant="outline"
+              className="rounded-full bg-white/5 hover:bg-white/10 border-white/60 text-white"
+              onClick={preview}
+              disabled={!concursoId || !plantillaId || participantes.length === 0}
+            >
+              Previsualizar
+            </Button>
+            <Button
+              variant="outline"
+              className="rounded-full bg-white/5 hover:bg-white/10 border-white/60 text-white"
+              onClick={descargarSeleccionados}
+              disabled={!concursoId || !plantillaId || !tieneAlgoSeleccionado}
+            >
+              Descargar
+            </Button>
+            <Button
+              className="rounded-full bg-white text-[#0b2b55] hover:bg-white/90"
+              onClick={() => setConfirmSendOpen(true)}
+              disabled={!concursoId || !plantillaId || !tieneAlgoSeleccionado}
+            >
+              Enviar
+            </Button>
+          </div>
         </div>
       </div>
 
-      {/* Filtros + plantilla */}
+      {/* FILTROS PRINCIPALES */}
       <Card className="p-3">
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-3">
           <div>
             <label className="text-xs text-gray-600">Concurso</label>
             <select
@@ -184,23 +592,11 @@ export default function Constancias() {
               value={concursoId}
               onChange={(e) => setConcursoId(e.target.value)}
             >
-              <option value="Todos">Todos</option>
-              {concursosMock.map((c) => (
-                <option key={c.id} value={c.id}>{c.nombre}</option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-xs text-gray-600">Tipo</label>
-            <select
-              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
-              value={tipo}
-              onChange={(e) => setTipo(e.target.value as TipoPlantilla | "Todos")}
-            >
-              <option value="Todos">Todos</option>
-              {(["Coordinador","Asesor","Integrante","Equipo"] as TipoPlantilla[]).map(t => (
-                <option key={t} value={t}>{t}</option>
+              <option value="">Selecciona…</option>
+              {concursos.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                </option>
               ))}
             </select>
           </div>
@@ -211,175 +607,368 @@ export default function Constancias() {
               className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
               value={plantillaId}
               onChange={(e) => setPlantillaId(e.target.value)}
+              disabled={!concursoId || plantillas.length === 0}
             >
-              {plantillasFiltradas.map((p) => (
+              {(!concursoId || plantillas.length === 0) && (
+                <option value="">Selecciona un concurso primero…</option>
+              )}
+              {plantillas.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.nombre} · {nombreConcurso(p.concursoId, concursosMock)}
+                  {p.nombre} · {nombreConcurso(p.concursoId, concursos)}
                 </option>
               ))}
             </select>
-            <p className="text-[11px] text-gray-500 mt-1">
-              Variables: {plantillaTipo ? varsPorTipo[plantillaTipo].join(", ") : "—"}
-            </p>
+            {!!plantilla && (
+              <p className="text-[11px] text-gray-500 mt-1 flex flex-wrap gap-1">
+                {tokensDisponibles.map((t) => (
+                  <code
+                    key={t}
+                    draggable
+                    onDragStart={tokenDragStart(t)}
+                    title="Arrastra este token a Asunto o Mensaje"
+                    className="px-1 bg-slate-100 rounded cursor-grab active:cursor-grabbing"
+                  >
+                    {t}
+                  </code>
+                ))}
+              </p>
+            )}
           </div>
         </div>
       </Card>
 
-      {/* Destinatarios */}
+      {/* FILTROS SECUNDARIOS + LISTA */}
+      <Card className="p-4">
+        <div className="grid gap-3 md:grid-cols-4 md:items-end">
+          <div>
+            <label className="text-xs text-gray-600">Equipo</label>
+            <select
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              value={fEquipo}
+              onChange={(e) => setFEquipo(e.target.value)}
+              disabled={!concursoId}
+            >
+              {equiposDisponibles.map((eq) => (
+                <option key={eq} value={eq}>
+                  {eq}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Rol</label>
+            <select
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              value={fRol}
+              onChange={(e) => setFRol(e.target.value as any)}
+              disabled={!concursoId}
+            >
+              {["Todos", "Líder", "Integrante", "Asesor", "Coordinador"].map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-xs text-gray-600">Buscar</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              placeholder="Nombre, equipo o rol…"
+              value={busq}
+              onChange={(e) => setBusq(e.target.value)}
+              disabled={!concursoId}
+            />
+          </div>
+        </div>
+
+        {!concursoId ? (
+          <div className="p-6 text-sm text-gray-600">Selecciona un concurso para ver sus integrantes.</div>
+        ) : participantesFiltrados.length === 0 ? (
+          <div className="p-6 text-sm text-gray-600">No hay integrantes que coincidan con los filtros.</div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mt-3">
+              <div className="text-sm text-gray-600">
+                Mostrando <strong>{participantesFiltrados.length}</strong>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-700 inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    onChange={(e) => toggleAll(e.target.checked)}
+                    checked={participantesFiltrados.every((p) => sel[p.id]) && participantesFiltrados.length > 0}
+                  />
+                  Seleccionar todo (según filtros)
+                </label>
+                <Button variant="outline" onClick={() => setSel({})}>
+                  Limpiar
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-2 overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-600">
+                    <th className="py-2 pr-3 w-10"></th>
+                    <th className="py-2 pr-3">Nombre</th>
+                    <th className="py-2 pr-3">Equipo</th>
+                    <th className="py-2 pr-3">Rol</th>
+                    <th className="py-2 pr-3">Email</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {participantesFiltrados.map((p) => (
+                    <tr key={p.id} className="border-t">
+                      <td className="py-2 pr-3">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4"
+                          checked={!!sel[p.id]}
+                          onChange={(e) => setSel((s) => ({ ...s, [p.id]: e.target.checked }))}
+                        />
+                      </td>
+                      <td className="py-2 pr-3">{p.nombre}</td>
+                      <td className="py-2 pr-3">{p.equipo || "—"}</td>
+                      <td className="py-2 pr-3">{p.puesto || "—"}</td>
+                      <td className="py-2 pr-3">{p.email || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* CONFIG EMAIL (compacta) */}
       <Card className="p-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold">Destinatarios</h3>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={agregarFila}>Agregar fila</Button>
-            <Button variant="outline" onClick={() => alert("Importar CSV (pendiente)")}>Importar CSV</Button>
+          <h3 className="text-base font-semibold">Configuración de correo</h3>
+          <Button variant="outline" onClick={persistEmailCfg}>
+            Guardar
+          </Button>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Puedes usar tokens (p. ej. <code>{"{{NOMBRE}}"}</code>, <code>{"{{CONCURSO}}"}</code>, <code>{"{{FECHA}}"}</code>).
+          {" "}Arrástralos a los campos de Asunto o Mensaje.
+        </p>
+
+        {!!tokensDisponibles.length && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {tokensDisponibles.map((t) => (
+              <span
+                key={t}
+                draggable
+                onDragStart={tokenDragStart(t)}
+                title="Arrastra a Asunto o Mensaje"
+                className="inline-flex items-center rounded-lg border px-2 py-1 text-xs bg-slate-50 hover:bg-slate-100 cursor-grab active:cursor-grabbing"
+              >
+                {t}
+              </span>
+            ))}
           </div>
-        </div>
+        )}
 
-        <div className="mt-3 overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-600">
-                <th className="py-2 pr-3">Nombre</th>
-                <th className="py-2 pr-3">Email</th>
-                {columnasExtra.includes("equipo") && <th className="py-2 pr-3">Equipo</th>}
-                {columnasExtra.includes("puesto") && (
-                  <th className="py-2 pr-3">{plantillaTipo === "Coordinador" ? "Cargo" : "Puesto"}</th>
-                )}
-                {columnasExtra.includes("lugar") && <th className="py-2 pr-3">Lugar</th>}
-                <th className="py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {destinatarios.map((d, i) => (
-                <tr key={d.id} className="border-t">
-                  <td className="py-2 pr-3">
-                    <input
-                      className="w-64 rounded-xl border border-gray-300 px-3 py-2"
-                      placeholder={`Nombre #${i + 1}`}
-                      value={d.nombre}
-                      onChange={(e) => actualizar(d.id, "nombre", e.target.value)}
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input
-                      className="w-64 rounded-xl border border-gray-300 px-3 py-2"
-                      placeholder="correo@ejemplo.com"
-                      value={d.email ?? ""}
-                      onChange={(e) => actualizar(d.id, "email", e.target.value)}
-                    />
-                  </td>
-
-                  {columnasExtra.includes("equipo") && (
-                    <td className="py-2 pr-3">
-                      <input
-                        className="w-48 rounded-xl border border-gray-300 px-3 py-2"
-                        placeholder="Equipo"
-                        value={d.equipo ?? ""}
-                        onChange={(e) => actualizar(d.id, "equipo", e.target.value)}
-                      />
-                    </td>
-                  )}
-
-                  {columnasExtra.includes("puesto") && (
-                    <td className="py-2 pr-3">
-                      <input
-                        className="w-48 rounded-xl border border-gray-300 px-3 py-2"
-                        placeholder={plantillaTipo === "Coordinador" ? "Cargo" : "Puesto"}
-                        value={d.puesto ?? ""}
-                        onChange={(e) => actualizar(d.id, "puesto", e.target.value)}
-                      />
-                    </td>
-                  )}
-
-                  {columnasExtra.includes("lugar") && (
-                    <td className="py-2 pr-3">
-                      <input
-                        className="w-40 rounded-xl border border-gray-300 px-3 py-2"
-                        placeholder="Lugar"
-                        value={d.lugar ?? ""}
-                        onChange={(e) => actualizar(d.id, "lugar", e.target.value)}
-                      />
-                    </td>
-                  )}
-
-                  <td className="py-2">
-                    <Button variant="outline" size="sm" onClick={() => eliminarFila(d.id)}>Eliminar</Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => alert("Previsualizar (pendiente)")}>Previsualizar</Button>
-          <Button onClick={emitir}>Emitir constancias</Button>
+        <div className="grid md:grid-cols-2 gap-3 mt-3">
+          <div>
+            <label className="text-xs text-gray-600">Remitente (Nombre)</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              value={emailCfg.fromName}
+              onChange={(e) => setEmailCfg((v) => ({ ...v, fromName: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Remitente (Correo)</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              value={emailCfg.fromEmail}
+              onChange={(e) => setEmailCfg((v) => ({ ...v, fromEmail: e.target.value }))}
+              placeholder="remitente@tu-dominio.com"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-xs text-gray-600">Asunto</label>
+            <input
+              ref={subjectRef}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={dropInto("subjectTpl")}
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              value={emailCfg.subjectTpl}
+              onChange={(e) => setEmailCfg((v) => ({ ...v, subjectTpl: e.target.value }))}
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-xs text-gray-600">Mensaje</label>
+            <textarea
+              ref={bodyRef}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={dropInto("bodyTpl")}
+              rows={4}
+              className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
+              value={emailCfg.bodyTpl}
+              onChange={(e) => setEmailCfg((v) => ({ ...v, bodyTpl: e.target.value }))}
+            />
+          </div>
         </div>
       </Card>
 
-      {/* Historial */}
-      <div className="space-y-3">
-        <h3 className="text-base font-semibold">Historial</h3>
-        {emisiones.length === 0 ? (
-          <Card className="p-6 text-sm text-gray-600">Aún no hay emisiones registradas.</Card>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2">
-            {emisiones.map((e) => (
-              <motion.div key={e.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-                <Card className="p-4 border border-gray-100">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="font-medium">{e.plantillaNombre}</p>
-                      <p className="text-sm text-gray-600">{e.tipo} · {nombreConcurso(e.concursoId, concursosMock)}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {new Date(e.fecha).toLocaleString("es-MX")} · {e.total} constancias
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700">Emitidas</span>
-                      <Button size="sm" variant="outline" onClick={() => alert("Descargar ZIP (pendiente)")}>
-                        Descargar ZIP
-                      </Button>
-                    </div>
-                  </div>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
+      {/* Modal preview */}
+      <AnimatePresence>
+        {previewUrl && (
+          <>
+            <motion.div
+              className="fixed inset-0 bg-black/40 z-[70]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                URL.revokeObjectURL(previewUrl!);
+                setPreviewUrl(null);
+              }}
+            />
+            <motion.div
+              className="fixed inset-0 z-[71] grid place-items-center p-4"
+              initial={{ opacity: 0, y: 8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            >
+              <Card className="w-full max-w-5xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-medium">Previsualización</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      URL.revokeObjectURL(previewUrl!);
+                      setPreviewUrl(null);
+                    }}
+                  >
+                    Cerrar
+                  </Button>
+                </div>
+                <div className="aspect-[1.414/1] w-full">
+                  <embed
+                    src={`${previewUrl}#page=1&view=fit&toolbar=1`}
+                    type="application/pdf"
+                    className="w-full h-[75vh] rounded-xl"
+                  />
+                </div>
+              </Card>
+            </motion.div>
+          </>
         )}
-      </div>
+      </AnimatePresence>
 
-      {/* Envíos de correo */}
-      <div className="space-y-3">
-        <h3 className="text-base font-semibold">Envíos de correo</h3>
-        {correoLogs.length === 0 ? (
-          <Card className="p-6 text-sm text-gray-600">Aún no hay correos enviados.</Card>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2">
-            {correoLogs.map((log) => (
-              <motion.div key={log.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-                <Card className="p-4 border border-gray-100">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium truncate">{log.destinatario}</p>
-                      <p className="text-sm text-gray-600 truncate">
-                        {log.plantillaNombre} · {nombreConcurso(log.concursoId, concursosMock)}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">{new Date(log.timestamp).toLocaleString("es-MX")}</p>
-                      {log.estado === "error" && (
-                        <p className="text-xs text-red-600 mt-1">Error: {log.errorMsg ?? "desconocido"}</p>
-                      )}
-                    </div>
-                    <span className={`px-2 py-0.5 text-xs rounded-full ${chipCorreo[log.estado]}`}>
-                      {log.estado === "en-cola" ? "En cola" : log.estado === "enviado" ? "Enviado" : "Error"}
-                    </span>
-                  </div>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
+      {/* Modal confirmar envío */}
+      <AnimatePresence>
+        {confirmSendOpen && (
+          <>
+            <motion.div
+              className="fixed inset-0 bg-black/40 z-[70]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setConfirmSendOpen(false)}
+            />
+            <motion.div
+              className="fixed inset-0 z-[71] grid place-items-center p-4"
+              initial={{ opacity: 0, y: 8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            >
+              <Card className="w-full max-w-md p-4">
+                <h3 className="text-base font-semibold">Enviar correos</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Se enviarán {seleccionados.length} correos a los seleccionados con la configuración actual.
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setConfirmSendOpen(false)}>
+                    Cancelar
+                  </Button>
+                  <Button onClick={enviarSeleccionados}>Enviar ahora</Button>
+                </div>
+              </Card>
+            </motion.div>
+          </>
         )}
+      </AnimatePresence>
+
+      {/* Modal historial de correos */}
+      <AnimatePresence>
+        {histOpen && (
+          <>
+            <motion.div
+              className="fixed inset-0 bg-black/40 z-[70]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setHistOpen(false)}
+            />
+            <motion.div
+              className="fixed inset-0 z-[71] grid place-items-center p-4"
+              initial={{ opacity: 0, y: 8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            >
+              <Card className="w-full max-w-3xl p-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-semibold">Historial de correos</h3>
+                  <Button variant="outline" size="sm" onClick={() => setHistOpen(false)}>
+                    Cerrar
+                  </Button>
+                </div>
+                {correoLogs.length === 0 ? (
+                  <div className="p-6 text-sm text-gray-600">Aún no hay registros de envío.</div>
+                ) : (
+                  <div className="mt-3 grid gap-3">
+                    {correoLogs.map((log) => (
+                      <Card key={log.id} className="p-3 border border-gray-100">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{log.destinatario}</p>
+                            <p className="text-sm text-gray-600 truncate">
+                              {log.plantillaNombre} · {nombreConcurso(log.concursoId, concursos)}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              {new Date(log.timestamp).toLocaleString("es-MX")}
+                            </p>
+                            {log.estado === "error" && (
+                              <p className="text-xs text-red-600 mt-1">
+                                Error: {log.errorMsg ?? "desconocido"}
+                              </p>
+                            )}
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 text-xs rounded-full ${
+                              log.estado === "enviado"
+                                ? "bg-green-100 text-green-700"
+                                : log.estado === "en-cola"
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            {log.estado === "enviado" ? "Enviado" : log.estado === "en-cola" ? "En cola" : "Error"}
+                          </span>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Pie */}
+      <div className="flex justify-end">
+        <Link to="/concursos" className="text-sm text-tecnm-azul hover:underline">
+          Ir a Concursos
+        </Link>
       </div>
     </section>
-  )
+  );
 }
