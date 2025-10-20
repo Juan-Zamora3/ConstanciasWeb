@@ -1,10 +1,10 @@
 // src/pages/Concursos.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
-import { Pencil, Layers, FileText, UserPlus, HandCoins, Eye, Trash2 } from "lucide-react"
+import { Pencil, Layers, FileText, UserPlus, HandCoins, Eye, Trash2, Check } from "lucide-react"
 
 // Firebase
 import { db, storage } from "../servicios/firebaseConfig"
@@ -19,8 +19,8 @@ import {
   getDocs,
   doc as fsDoc,
   updateDoc,
-  serverTimestamp,
   deleteDoc,
+  serverTimestamp,
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
@@ -46,10 +46,6 @@ export type Concurso = {
 
 type Equipo = {
   id: string
-  // NUEVO: para poder editar/eliminar/pagar correctamente
-  encuestaId: string
-  respuestaId: string
-
   nombreEquipo: string
   nombreLider?: string
   integrantes: string[]
@@ -60,9 +56,10 @@ type Equipo = {
   institucion?: string
   telefono?: string
   escolaridad?: string
-
-  // NUEVO: estado de pago persistente
-  pagoConfirmado?: boolean
+  pagado?: boolean
+  // meta para editar/eliminar/actualizar
+  _encuestaId?: string
+  _respId?: string
 }
 
 /* ---------------- Utilidades ---------------- */
@@ -87,7 +84,7 @@ const safeEstado = (v: unknown): EstadoConcurso => {
   return "Activo"
 }
 
-/* ---------------- UI helpers (neumorphism + paleta) ---------------- */
+/* ---------------- UI helpers ---------------- */
 const neoSurface = [
   "relative rounded-xl3",
   "bg-gradient-to-br from-white to-gray-50",
@@ -116,7 +113,7 @@ const pill = [
   "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]",
 ].join(" ")
 
-/* Chips */
+/* Pills de estado */
 function Chip({
   children,
   tone = "azul",
@@ -132,7 +129,7 @@ function Chip({
   return <span className={map[tone]}>{children}</span>
 }
 
-/* Barra progreso */
+/* Barra de progreso */
 function BarraProgreso({ actual, total }: { actual: number; total: number }) {
   const pct = Math.min(100, Math.round((actual / Math.max(1, total)) * 100))
   return (
@@ -210,6 +207,10 @@ function EditCursoModal({
   const [preview, setPreview] = useState<string | undefined>(undefined)
   const [jumping, setJumping] = useState(false)
 
+  // generar link
+  const [genLoading, setGenLoading] = useState(false)
+  const [linkPublico, setLinkPublico] = useState("")
+
   useEffect(() => {
     if (!curso) return
     setNombre(curso.nombre || "")
@@ -222,6 +223,7 @@ function EditCursoModal({
     setTipoCurso(curso.tipoCurso || "grupos")
     setPreview(curso.portadaUrl)
     setFile(null)
+    setLinkPublico("")
   }, [curso])
 
   if (!open || !curso) return null
@@ -345,15 +347,26 @@ function EditCursoModal({
     }
   }
 
-  const gotoPublic = async () => {
+  const generarLink = async () => {
     try {
-      setJumping(true)
+      setGenLoading(true)
       const encuestaId = await ensureEncuesta(curso.id)
-      onClose()
-      navigate(`/formulario-publico/${encuestaId}`)
+      const base = window.location.origin
+      setLinkPublico(`${base}/formulario-publico/${encuestaId}`)
+    } catch (e) {
+      console.error(e)
+      alert("No fue posible generar el link.")
     } finally {
-      setJumping(false)
+      setGenLoading(false)
     }
+  }
+
+  const copiarLink = async () => {
+    if (!linkPublico) return
+    try {
+      await navigator.clipboard.writeText(linkPublico)
+      alert("Link copiado.")
+    } catch {}
   }
 
   return (
@@ -521,14 +534,27 @@ function EditCursoModal({
                   >
                     {jumping ? "Abriendo…" : "Configurar formulario"}
                   </Button>
-                  <Button
-                    variant="outline"
-                    className={`${pill} px-4 py-2 text-tecnm-azul`}
-                    onClick={gotoPublic}
-                    disabled={jumping}
-                  >
-                    {jumping ? "Abriendo…" : "Generar/abrir link público"}
-                  </Button>
+
+                  {/* Generar link público */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button
+                      variant="outline"
+                      className={`${pill} px-4 py-2 text-tecnm-azul`}
+                      onClick={generarLink}
+                      disabled={genLoading}
+                    >
+                      {genLoading ? "Generando…" : "Generar link del registro"}
+                    </Button>
+                    <input
+                      readOnly
+                      value={linkPublico}
+                      placeholder="El link aparecerá aquí…"
+                      className="min-w-[240px] flex-1 rounded-xl border px-3 py-2 text-sm"
+                    />
+                    <Button variant="outline" className={`${pill} px-4 py-2`} onClick={copiarLink} disabled={!linkPublico}>
+                      Copiar
+                    </Button>
+                  </div>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-2">
                   Se creará automáticamente la encuesta del curso si aún no existe.
@@ -561,58 +587,201 @@ function EditCursoModal({
   )
 }
 
-/* ---------------- Modal AÑADIR COORDINADOR ---------------- */
-function AddCoordinadorModal({
+/* ---------------- Modal EQUIPOS (con buscador, CRUD, pagado y añadir rápido) ---------------- */
+function ModalEquipos({
   open,
   onClose,
-  curso,
+  concurso,
+  equipos: equiposProp,
+  cargando,
+  error,
 }: {
   open: boolean
   onClose: () => void
-  curso: Concurso | null
+  concurso?: Concurso | null
+  equipos: Equipo[]
+  cargando: boolean
+  error: string | null
 }) {
-  const [saving, setSaving] = useState(false)
-  const [nombre, setNombre] = useState("")
-  const [correo, setCorreo] = useState("")
-  const [cargo, setCargo] = useState("Coordinador")
-  const [telefono, setTelefono] = useState("")
+  const [busq, setBusq] = useState("")
+  const [lista, setLista] = useState<Equipo[]>([])
+  const [addingOpen, setAddingOpen] = useState(false)
+
+  // encuestas del curso para "añadir rápido"
+  const [encuestas, setEncuestas] = useState<{ id: string; titulo?: string }[]>([])
+  const [encuestaDestino, setEncuestaDestino] = useState<string>("")
+
+  // editar / ver estados
+  const [editEq, setEditEq] = useState<Equipo | null>(null)
+  const [viewEq, setViewEq] = useState<Equipo | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [savingAdd, setSavingAdd] = useState(false)
+
+  // campos añadir rápido
+  const [aNombreEquipo, setANombreEquipo] = useState("")
+  const [aNombreLider, setANombreLider] = useState("")
+  const [aEmail, setAEmail] = useState("")
+  const [aCategoria, setACategoria] = useState("")
+  const [aIntegrantes, setAIntegrantes] = useState("")
+  const [aAsesor, setAAsesor] = useState("")
+  const [aInstitucion, setAInstitucion] = useState("")
+  const [aTelefono, setATelefono] = useState("")
+  const [aEscolaridad, setAEscolaridad] = useState("")
+  const [aPagado, setAPagado] = useState(false)
 
   useEffect(() => {
-    if (!open) {
-      setNombre("")
-      setCorreo("")
-      setCargo("Coordinador")
-      setTelefono("")
-    }
-  }, [open])
+    setLista(equiposProp || [])
+  }, [equiposProp])
 
-  const guardar = async () => {
-    if (!curso) return
-    if (!nombre.trim() || !correo.trim() || !cargo.trim()) {
-      alert("Completa nombre, correo y cargo.")
-      return
-    }
+  // carga encuestas del curso
+  useEffect(() => {
+    (async () => {
+      if (!open || !concurso?.id) return
+      try {
+        const qEnc = query(collection(db, "encuestas"), where("cursoId", "==", concurso.id))
+        const snap = await getDocs(qEnc)
+        const rows = snap.docs.map((d) => ({ id: d.id, titulo: (d.data() as any)?.titulo || d.id }))
+        setEncuestas(rows)
+        setEncuestaDestino(rows[0]?.id || "")
+      } catch (e) {
+        setEncuestas([])
+        setEncuestaDestino("")
+      }
+    })()
+  }, [open, concurso?.id])
+
+  const filtrados = useMemo(() => {
+    const t = busq.trim().toLowerCase()
+    if (!t) return lista
+    return lista.filter((eq) =>
+      [eq.nombreEquipo, eq.nombreLider, eq.categoria, (eq.integrantes || []).join(" "), eq.institucion]
+        .join(" ")
+        .toLowerCase()
+        .includes(t)
+    )
+  }, [busq, lista])
+
+  const togglePagado = async (eq: Equipo, val: boolean) => {
+    if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
     try {
-      setSaving(true)
-      await addDoc(collection(db, "coordinadores"), {
-        cursoId: curso.id,
-        concursoNombre: curso.nombre ?? "",
-        nombre: nombre.trim(),
-        email: correo.trim(),
-        cargo: cargo.trim(),
-        telefono: telefono.trim() || null,
-        creadoEn: serverTimestamp(),
-      })
-      onClose()
+      await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
+      setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
     } catch (e) {
       console.error(e)
-      alert("No se pudo guardar el coordinador.")
-    } finally {
-      setSaving(false)
+      alert("No se pudo actualizar el estado de pago.")
     }
   }
 
-  if (!open || !curso) return null
+  const eliminarEquipo = async (eq: Equipo) => {
+    if (!eq._encuestaId || !eq._respId) return alert("No se puede eliminar este registro.")
+    if (!confirm(`¿Eliminar el equipo "${eq.nombreEquipo}"?`)) return
+    try {
+      await deleteDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId))
+      setLista((prev) => prev.filter((x) => x._respId !== eq._respId))
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo eliminar.")
+    }
+  }
+
+  const guardarEdicion = async () => {
+    if (!editEq || !editEq._encuestaId || !editEq._respId) return
+    try {
+      setSavingEdit(true)
+      const patch: any = {
+        preset: {
+          nombreEquipo: editEq.nombreEquipo || "",
+          nombreLider: editEq.nombreLider || "",
+          contactoEquipo: editEq.contactoEquipo || "",
+          categoria: editEq.categoria || "",
+          integrantes: Array.isArray(editEq.integrantes) ? editEq.integrantes : [],
+        },
+        custom: {
+          p1: editEq.maestroAsesor || "",
+          p2: editEq.institucion || "",
+          p3: editEq.telefono || "",
+          p4: editEq.escolaridad || "",
+        },
+      }
+      await updateDoc(fsDoc(db, "encuestas", editEq._encuestaId, "respuestas", editEq._respId), patch)
+      setLista((prev) =>
+        prev.map((x) => (x._respId === editEq._respId ? { ...x, ...editEq } : x))
+      )
+      setEditEq(null)
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo guardar la edición.")
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  const añadirRapido = async () => {
+    if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
+    try {
+      setSavingAdd(true)
+      const integrantes = aIntegrantes
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+
+      const payload = {
+        createdAt: serverTimestamp(),
+        submittedAt: serverTimestamp(),
+        pagado: aPagado,
+        preset: {
+          nombreEquipo: aNombreEquipo.trim() || "Equipo",
+          nombreLider: aNombreLider.trim() || "",
+          contactoEquipo: aEmail.trim() || "",
+          categoria: aCategoria.trim() || "",
+          integrantes,
+        },
+        custom: {
+          p1: aAsesor.trim() || "",
+          p2: aInstitucion.trim() || "",
+          p3: aTelefono.trim() || "",
+          p4: aEscolaridad.trim() || "",
+        },
+      }
+      const ref = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
+      const nuevo: Equipo = {
+        id: ref.id,
+        _respId: ref.id,
+        _encuestaId: encuestaDestino,
+        pagado: aPagado,
+        nombreEquipo: payload.preset.nombreEquipo,
+        nombreLider: payload.preset.nombreLider,
+        integrantes,
+        contactoEquipo: payload.preset.contactoEquipo,
+        categoria: payload.preset.categoria,
+        submittedAt: new Date().toISOString(),
+        maestroAsesor: payload.custom.p1,
+        institucion: payload.custom.p2,
+        telefono: payload.custom.p3,
+        escolaridad: payload.custom.p4,
+      }
+      setLista((prev) => [nuevo, ...prev])
+      // limpiar
+      setANombreEquipo("")
+      setANombreLider("")
+      setAEmail("")
+      setACategoria("")
+      setAIntegrantes("")
+      setAAsesor("")
+      setAInstitucion("")
+      setATelefono("")
+      setAEscolaridad("")
+      setAPagado(false)
+      setAddingOpen(false)
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo añadir.")
+    } finally {
+      setSavingAdd(false)
+    }
+  }
+
+  if (!open) return null
 
   return (
     <AnimatePresence>
@@ -624,190 +793,6 @@ function AddCoordinadorModal({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div className={`${neoSurface} w-full max-w-md overflow-hidden`} onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
-            <h2 className="text-lg font-semibold">Añadir Coordinador</h2>
-            <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
-          </div>
-
-          <div className="p-5 space-y-3">
-            {[
-              { label: "Nombre", type: "text", value: nombre, set: setNombre, ph: "Nombre completo" },
-              { label: "Correo", type: "email", value: correo, set: setCorreo, ph: "correo@ejemplo.com" },
-              { label: "Cargo", type: "text", value: cargo, set: setCargo, ph: "Coordinador" },
-              { label: "Teléfono", type: "tel", value: telefono, set: setTelefono, ph: "(xxx) xxx xxxx" },
-            ].map((f, i) => (
-              <div key={i}>
-                <label className="text-sm text-gray-600">{f.label}</label>
-                <input
-                  type={f.type as any}
-                  value={f.value}
-                  onChange={(e) => f.set(e.target.value)}
-                  placeholder={f.ph}
-                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/60">
-            <Button variant="outline" className={`${pill} px-4 py-2`} onClick={onClose} disabled={saving}>Cancelar</Button>
-            <Button
-              variant="solid"
-              className="rounded-full px-5 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
-              onClick={guardar}
-              disabled={saving}
-            >
-              {saving ? "Guardando…" : "Guardar"}
-            </Button>
-          </div>
-        </div>
-      </motion.div>
-    </AnimatePresence>
-  )
-}
-
-/* ---------------- Modal EQUIPOS (con buscador + acciones + pago) ---------------- */
-function ModalEquipos({
-  open,
-  onClose,
-  concurso,
-  equipos,
-  cargando,
-  error,
-  onEquipoUpdated,
-  onEquipoDeleted,
-}: {
-  open: boolean
-  onClose: () => void
-  concurso?: Concurso | null
-  equipos: Equipo[]
-  cargando: boolean
-  error: string | null
-  onEquipoUpdated: (eq: Equipo) => void
-  onEquipoDeleted: (id: string) => void
-}) {
-  const [busq, setBusq] = useState("")
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [editId, setEditId] = useState<string | null>(null)
-  const [draft, setDraft] = useState<Partial<Equipo>>({})
-  const [savingPagoId, setSavingPagoId] = useState<string | null>(null)
-  const [savingEdit, setSavingEdit] = useState(false)
-
-  useEffect(() => {
-    if (!open) {
-      setBusq("")
-      setExpanded({})
-      setEditId(null)
-      setDraft({})
-    }
-  }, [open])
-
-  const filtered = useMemo(() => {
-    const q = busq.trim().toLowerCase()
-    if (!q) return equipos
-    return equipos.filter((e) => {
-      const a = e.nombreEquipo?.toLowerCase() || ""
-      const b = e.nombreLider?.toLowerCase() || ""
-      const c = e.categoria?.toLowerCase() || ""
-      return a.includes(q) || b.includes(q) || c.includes(q)
-    })
-  }, [busq, equipos])
-
-  const togglePago = async (e: Equipo, checked: boolean) => {
-    try {
-      setSavingPagoId(e.id)
-      await updateDoc(
-        fsDoc(db, "encuestas", e.encuestaId, "respuestas", e.respuestaId),
-        { pagoConfirmado: checked, updatedAt: serverTimestamp() } as any
-      )
-      onEquipoUpdated({ ...e, pagoConfirmado: checked })
-    } catch (err) {
-      console.error(err)
-      alert("No se pudo actualizar el estado de pago.")
-    } finally {
-      setSavingPagoId(null)
-    }
-  }
-
-  const beginEdit = (e: Equipo) => {
-    setEditId(e.id)
-    setDraft({
-      ...e,
-      integrantes: e.integrantes ? [...e.integrantes] : [],
-    })
-  }
-
-  const cancelEdit = () => {
-    setEditId(null)
-    setDraft({})
-  }
-
-  const saveEdit = async () => {
-    if (!editId) return
-    const e = equipos.find((x) => x.id === editId)
-    if (!e) return
-    try {
-      setSavingEdit(true)
-      const nombreEquipo = (draft.nombreEquipo ?? e.nombreEquipo ?? "").trim()
-      const nombreLider = (draft.nombreLider ?? e.nombreLider ?? "").trim()
-      const contactoEquipo = (draft.contactoEquipo ?? e.contactoEquipo ?? "").trim()
-      const categoria = (draft.categoria ?? e.categoria ?? "").trim()
-      const integrantes: string[] = (draft.integrantes ?? e.integrantes ?? [])
-        .map((s) => String(s || "").trim())
-        .filter(Boolean)
-
-      const ref = fsDoc(db, "encuestas", e.encuestaId, "respuestas", e.respuestaId)
-      await updateDoc(ref, {
-        // Para compat: espejo top-level
-        nombreEquipo,
-        nombreLider,
-        contactoEquipo,
-        categoria,
-        integrantes,
-        // Y dentro de `preset` (donde suele vivir la info)
-        "preset.nombreEquipo": nombreEquipo,
-        "preset.nombreLider": nombreLider,
-        "preset.contactoEquipo": contactoEquipo,
-        "preset.categoria": categoria,
-        "preset.integrantes": integrantes,
-        updatedAt: serverTimestamp(),
-      } as any)
-
-      onEquipoUpdated({
-        ...e,
-        nombreEquipo,
-        nombreLider,
-        contactoEquipo,
-        categoria,
-        integrantes,
-      })
-      cancelEdit()
-    } catch (err) {
-      console.error(err)
-      alert("No se pudo guardar la edición.")
-    } finally {
-      setSavingEdit(false)
-    }
-  }
-
-  const deleteEquipo = async (e: Equipo) => {
-    if (!confirm(`¿Eliminar el equipo "${e.nombreEquipo}"? Esta acción no se puede deshacer.`)) return
-    try {
-      await deleteDoc(fsDoc(db, "encuestas", e.encuestaId, "respuestas", e.respuestaId))
-      onEquipoDeleted(e.id)
-    } catch (err) {
-      console.error(err)
-      alert("No se pudo eliminar el equipo.")
-    }
-  }
-
-  if (!open) return null
-
-  return (
-    <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
-      <motion.div initial={{ opacity: 0, y: 20, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.98 }} transition={{ duration: 0.18 }} className="fixed inset-0 z-50 grid place-items-center p-4">
         <div className={`${neoSurface} w-full max-w-5xl overflow-hidden`} onClick={(e)=>e.stopPropagation()}>
           <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
             <div className="min-w-0">
@@ -817,212 +802,280 @@ function ModalEquipos({
             <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
           </div>
 
-          <div className="p-5 max-h-[70vh] overflow-auto">
-            {/* Buscador dentro del modal */}
-            <div className="mb-3 flex items-center gap-2">
-              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full`}>
+          <div className="p-5 space-y-3 max-h-[78vh] overflow-auto">
+            {/* Barra superior: buscador + añadir rápido */}
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto`}>
                 <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
                   <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
                 </svg>
                 <input
                   value={busq}
                   onChange={(e)=>setBusq(e.target.value)}
-                  placeholder="Buscar por equipo, líder o categoría…"
-                  className="w-full outline-none text-sm bg-transparent"
+                  placeholder="Buscar equipo, líder, categoría, institución…"
+                  className="w-full md:w-80 outline-none text-sm bg-transparent"
                 />
               </div>
-              {busq && <Button variant="outline" className={`${pill} px-3`} onClick={()=>setBusq("")}>Limpiar</Button>}
+
+              <div className="flex-1" />
+
+              <Button variant="outline" className={`${pill} px-4 py-2`} onClick={() => setAddingOpen((v)=>!v)}>
+                {addingOpen ? "Cerrar añadir" : "Añadir rápido"}
+              </Button>
             </div>
 
+            {/* Añadir rápido */}
+            {addingOpen && (
+              <Card className={`${neoInset} p-3`}>
+                <div className="grid md:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs text-gray-600">Encuesta destino</label>
+                    <select
+                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      value={encuestaDestino}
+                      onChange={(e)=>setEncuestaDestino(e.target.value)}
+                    >
+                      {encuestas.length === 0 ? (
+                        <option value="">(No hay encuestas para este curso)</option>
+                      ) : (
+                        encuestas.map(e => <option key={e.id} value={e.id}>{e.titulo || e.id}</option>)
+                      )}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2 mt-6">
+                    <label className="text-xs text-gray-600 inline-flex items-center gap-2">
+                      <input type="checkbox" checked={aPagado} onChange={(e)=>setAPagado(e.target.checked)} />
+                      Marcar como pagado
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Nombre del equipo *</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreEquipo} onChange={(e)=>setANombreEquipo(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Nombre del líder</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreLider} onChange={(e)=>setANombreLider(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Correo del equipo</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEmail} onChange={(e)=>setAEmail(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Categoría</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aCategoria} onChange={(e)=>setACategoria(e.target.value)} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="text-xs text-gray-600">Integrantes (separados por coma)</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aIntegrantes} onChange={(e)=>setAIntegrantes(e.target.value)} placeholder="Persona 1, Persona 2, Persona 3…" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Maestro asesor</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aAsesor} onChange={(e)=>setAAsesor(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Institución</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aInstitucion} onChange={(e)=>setAInstitucion(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Teléfono</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aTelefono} onChange={(e)=>setATelefono(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Escolaridad</label>
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEscolaridad} onChange={(e)=>setAEscolaridad(e.target.value)} />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex justify-end gap-2">
+                  <Button variant="outline" onClick={()=>setAddingOpen(false)}>Cancelar</Button>
+                  <Button onClick={añadirRapido} disabled={savingAdd || !aNombreEquipo.trim()}>
+                    {savingAdd ? "Guardando…" : "Añadir"}
+                  </Button>
+                </div>
+              </Card>
+            )}
+
+            {/* Lista */}
             {cargando && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
             {error && !cargando && <Card className={`${neoInset} p-6 text-sm text-rose-600`}>{error}</Card>}
-            {!cargando && !error && filtered.length === 0 && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas.</Card>}
+            {!cargando && !error && filtrados.length === 0 && (
+              <Card className={`${neoInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>
+            )}
 
-            {!cargando && !error && filtered.length > 0 && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {filtered.map((eq) => {
-                  const isEdit = editId === eq.id
-                  const show = expanded[eq.id] ?? true
-
-                  return (
-                    <Card key={eq.id} className={`relative p-4 border-0 ${neoSurface}`}>
-                      {/* Check de pago */}
-                      <label className="absolute top-3 left-3 inline-flex items-center gap-2 select-none">
+            {!cargando && !error && filtrados.length > 0 && (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {filtrados.map((eq) => (
+                  <Card key={`${eq._respId || eq.id}`} className={`p-4 border-0 ${neoSurface}`}>
+                    <div className="relative">
+                      {/* check pagado arriba-izquierda */}
+                      <label className="absolute -top-2 -left-2 bg-white rounded-full border shadow px-2 py-1 text-xs inline-flex items-center gap-1">
                         <input
                           type="checkbox"
-                          className="h-5 w-5 accent-emerald-600"
-                          checked={!!eq.pagoConfirmado}
-                          onChange={(ev) => togglePago(eq, ev.target.checked)}
-                          disabled={savingPagoId === eq.id}
-                          title="Confirmar pago"
+                          checked={!!eq.pagado}
+                          onChange={(e)=>togglePagado(eq, e.target.checked)}
                         />
-                        <span className="text-xs text-gray-700">Pago</span>
+                        Pagado {eq.pagado && <Check size={14} className="text-green-600" />}
                       </label>
 
-                      {/* Acciones */}
-                      <div className="absolute top-2 right-2 flex items-center gap-1">
-                        <IconBtn title={show ? "Ocultar" : "Ver"} onClick={() => setExpanded((m) => ({ ...m, [eq.id]: !show }))}>
-                          <Eye size={18} />
-                        </IconBtn>
-                        {isEdit ? (
-                          <>
-                            <Button
-                              size="sm"
-                              className="rounded-full px-3 py-1 bg-emerald-600 text-white"
-                              onClick={saveEdit}
-                              disabled={savingEdit}
-                            >
-                              Guardar
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className={`${pill} px-3 py-1`}
-                              onClick={cancelEdit}
-                              disabled={savingEdit}
-                            >
-                              Cancelar
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <IconBtn title="Editar" onClick={() => beginEdit(eq)}>
-                              <Pencil size={18} />
-                            </IconBtn>
-                            <IconBtn title="Eliminar" onClick={() => deleteEquipo(eq)}>
-                              <Trash2 size={18} />
-                            </IconBtn>
-                          </>
-                        )}
-                      </div>
-
-                      {/* Cabecera */}
-                      <div className="flex items-start gap-3 mt-4">
+                      <div className="flex items-start gap-3">
                         <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
                           {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            {isEdit ? (
-                              <input
-                                className="w-full rounded-xl border px-3 py-2"
-                                value={draft.nombreEquipo as string ?? ""}
-                                onChange={(e) => setDraft((d) => ({ ...d, nombreEquipo: e.target.value }))}
-                              />
-                            ) : (
-                              <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
-                            )}
-                            {eq.categoria && !isEdit && <Chip tone="gris">{eq.categoria}</Chip>}
-                            {eq.pagoConfirmado && <span className="inline-flex items-center px-2 py-0.5 text-[11px] rounded-full bg-emerald-100 text-emerald-700">✓ Pagado</span>}
+                            <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
+                            {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
                           </div>
-                          <p className="text-xs text-gray-600 mt-0.5">
-                            Líder:{" "}
-                            {isEdit ? (
-                              <input
-                                className="rounded-xl border px-2 py-1 text-xs"
-                                value={draft.nombreLider as string ?? ""}
-                                onChange={(e) => setDraft((d) => ({ ...d, nombreLider: e.target.value }))}
-                              />
-                            ) : (
-                              eq.nombreLider || "—"
-                            )}
-                            {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
+                          <p className="text-xs text-gray-600">
+                            Líder: {eq.nombreLider || "—"}
+                            {eq.submittedAt && <> · {new Date(eq.submittedAt).toLocaleString()}</>}
                           </p>
+
+                          <div className="mt-2">
+                            <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
+                            <ul className="text-sm list-disc ml-5 space-y-0.5">
+                              {eq.integrantes?.length ? eq.integrantes.map((n, i) => <li key={i}>{n}</li>) : <li>—</li>}
+                            </ul>
+                          </div>
+
+                          <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
+                            <Info label="Contacto" value={eq.contactoEquipo} />
+                            <Info label="Maestro asesor" value={eq.maestroAsesor} />
+                            <Info label="Institución" value={eq.institucion} />
+                            <Info label="Escolaridad" value={eq.escolaridad} />
+                            <Info label="Teléfono" value={eq.telefono} />
+                          </div>
+
+                          {/* acciones */}
+                          <div className="flex gap-2 mt-3">
+                            <IconBtn title="Ver" onClick={()=>setViewEq(eq)}><Eye size={18} /></IconBtn>
+                            <IconBtn title="Editar" onClick={()=>setEditEq(eq)}><Pencil size={18} /></IconBtn>
+                            <IconBtn title="Eliminar" onClick={()=>eliminarEquipo(eq)}><Trash2 size={18} /></IconBtn>
+                          </div>
                         </div>
                       </div>
-
-                      {/* Detalles */}
-                      {show && (
-                        <div className="mt-3">
-                          {/* Integrantes */}
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
-                            {isEdit ? (
-                              <textarea
-                                className="w-full rounded-xl border px-3 py-2 text-sm"
-                                rows={4}
-                                placeholder="Un integrante por línea"
-                                value={(draft.integrantes as string[] | undefined)?.join("\n") ?? eq.integrantes.join("\n")}
-                                onChange={(e) =>
-                                  setDraft((d) => ({
-                                    ...d,
-                                    integrantes: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
-                                  }))
-                                }
-                              />
-                            ) : (
-                              <ul className="text-sm list-disc ml-5 space-y-0.5">
-                                {eq.integrantes?.length ? eq.integrantes.map((n, i) => <li key={i}>{n}</li>) : <li>—</li>}
-                              </ul>
-                            )}
-                          </div>
-
-                          {/* Campos extra */}
-                          <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
-                            <Info
-                              label="Contacto"
-                              value={
-                                isEdit ? undefined : (eq.contactoEquipo || "—")
-                              }
-                              editNode={
-                                isEdit ? (
-                                  <input
-                                    className="w-full rounded-xl border px-3 py-2 text-sm"
-                                    value={draft.contactoEquipo as string ?? ""}
-                                    onChange={(e) => setDraft((d) => ({ ...d, contactoEquipo: e.target.value }))}
-                                  />
-                                ) : undefined
-                              }
-                            />
-                            <Info
-                              label="Maestro asesor"
-                              value={eq.maestroAsesor}
-                            />
-                            <Info
-                              label="Institución"
-                              value={eq.institucion}
-                            />
-                            <Info
-                              label="Escolaridad"
-                              value={eq.escolaridad}
-                            />
-                            <Info
-                              label="Teléfono"
-                              value={eq.telefono}
-                            />
-                            <Info
-                              label="Categoría"
-                              value={isEdit ? undefined : (eq.categoria || "—")}
-                              editNode={
-                                isEdit ? (
-                                  <input
-                                    className="w-full rounded-xl border px-3 py-2 text-sm"
-                                    value={draft.categoria as string ?? ""}
-                                    onChange={(e) => setDraft((d) => ({ ...d, categoria: e.target.value }))}
-                                  />
-                                ) : undefined
-                              }
-                            />
-                          </div>
-                        </div>
-                      )}
-                    </Card>
-                  )
-                })}
+                    </div>
+                  </Card>
+                ))}
               </div>
             )}
           </div>
         </div>
+
+        {/* Modal VER */}
+        <AnimatePresence>
+          {viewEq && (
+            <>
+              <motion.div className="fixed inset-0 bg-black/30" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onClick={()=>setViewEq(null)} />
+              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{opacity:0, y:8, scale:0.98}} animate={{opacity:1, y:0, scale:1}} exit={{opacity:0, y:8, scale:0.98}}>
+                <Card className="w-full max-w-lg p-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-semibold">Detalle del equipo</h3>
+                    <Button variant="outline" size="sm" onClick={()=>setViewEq(null)}>Cerrar</Button>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm">
+                    <Info label="Equipo" value={viewEq.nombreEquipo} />
+                    <Info label="Líder" value={viewEq.nombreLider} />
+                    <Info label="Correo" value={viewEq.contactoEquipo} />
+                    <Info label="Categoría" value={viewEq.categoria} />
+                    <Info label="Integrantes" value={(viewEq.integrantes || []).join(", ")} />
+                    <Info label="Maestro asesor" value={viewEq.maestroAsesor} />
+                    <Info label="Institución" value={viewEq.institucion} />
+                    <Info label="Teléfono" value={viewEq.telefono} />
+                    <Info label="Escolaridad" value={viewEq.escolaridad} />
+                    <Info label="Pago" value={viewEq.pagado ? "Pagado" : "Pendiente"} />
+                  </div>
+                </Card>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+
+        {/* Modal EDITAR */}
+        <AnimatePresence>
+          {editEq && (
+            <>
+              <motion.div className="fixed inset-0 bg-black/30" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onClick={()=>setEditEq(null)} />
+              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{opacity:0, y:8, scale:0.98}} animate={{opacity:1, y:0, scale:1}} exit={{opacity:0, y:8, scale:0.98}}>
+                <Card className="w-full max-w-2xl p-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-semibold">Editar equipo</h3>
+                    <Button variant="outline" size="sm" onClick={()=>setEditEq(null)}>Cerrar</Button>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-2 mt-3">
+                    <Field label="Nombre del equipo">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreEquipo || ""} onChange={(e)=>setEditEq({...editEq, nombreEquipo: e.target.value})} />
+                    </Field>
+                    <Field label="Nombre del líder">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreLider || ""} onChange={(e)=>setEditEq({...editEq, nombreLider: e.target.value})} />
+                    </Field>
+                    <Field label="Correo del equipo">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.contactoEquipo || ""} onChange={(e)=>setEditEq({...editEq, contactoEquipo: e.target.value})} />
+                    </Field>
+                    <Field label="Categoría">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.categoria || ""} onChange={(e)=>setEditEq({...editEq, categoria: e.target.value})} />
+                    </Field>
+                    <Field label="Integrantes (coma)">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={(editEq.integrantes || []).join(", ")}
+                        onChange={(e)=>setEditEq({...editEq, integrantes: e.target.value.split(",").map(s=>s.trim()).filter(Boolean)})}
+                      />
+                    </Field>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm text-gray-700 inline-flex items-center gap-2">
+                        <input type="checkbox" checked={!!editEq.pagado} onChange={(e)=>setEditEq({...editEq, pagado: e.target.checked})} />
+                        Pagado
+                      </label>
+                    </div>
+
+                    <Field label="Maestro asesor">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.maestroAsesor || ""} onChange={(e)=>setEditEq({...editEq, maestroAsesor: e.target.value})} />
+                    </Field>
+                    <Field label="Institución">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.institucion || ""} onChange={(e)=>setEditEq({...editEq, institucion: e.target.value})} />
+                    </Field>
+                    <Field label="Teléfono">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.telefono || ""} onChange={(e)=>setEditEq({...editEq, telefono: e.target.value})} />
+                    </Field>
+                    <Field label="Escolaridad">
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.escolaridad || ""} onChange={(e)=>setEditEq({...editEq, escolaridad: e.target.value})} />
+                    </Field>
+                  </div>
+
+                  <div className="mt-3 flex justify-end gap-2">
+                    <Button variant="outline" onClick={()=>setEditEq(null)}>Cancelar</Button>
+                    <Button onClick={guardarEdicion} disabled={savingEdit}>
+                      {savingEdit ? "Guardando…" : "Guardar cambios"}
+                    </Button>
+                  </div>
+                </Card>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
       </motion.div>
     </AnimatePresence>
   )
 }
 
-function Info({label, value, editNode}:{label:string; value?:string; editNode?:React.ReactNode}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-gray-600">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+function Info({label, value}:{label:string; value?:string}) {
   return (
     <div className={`${neoInset} p-2`}>
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
-      {editNode ? editNode : <p className="truncate">{value || "—"}</p>}
+      <p className="truncate">{value || "—"}</p>
     </div>
   )
 }
@@ -1245,14 +1298,15 @@ export default function Concursos() {
             (data as any).submittedAt instanceof Timestamp
               ? (data as any).submittedAt.toDate().toISOString()
               : ((data as any).submittedAt ? new Date(String((data as any).submittedAt)).toISOString() : undefined)
+          const pagado = !!data.pagado
 
           equiposAcumulados.push({
             id: r.id,
-            encuestaId: encDoc.id,
-            respuestaId: r.id,
+            _respId: r.id,
+            _encuestaId: encDoc.id,
+            pagado,
             nombreEquipo, nombreLider, integrantes, contactoEquipo, categoria, submittedAt,
             maestroAsesor: custom.p1, institucion: custom.p2, telefono: custom.p3, escolaridad: custom.p4,
-            pagoConfirmado: !!(data as any).pagoConfirmado,
           })
         })
       }
@@ -1288,7 +1342,7 @@ export default function Concursos() {
         </div>
       </div>
 
-      {/* Barra de filtros */}
+      {/* Barra de acciones */}
       <Card className={`p-4 border-0 ${neoSurface} overflow-visible`}>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2 overflow-x-auto overflow-y-visible py-1 -mx-1 px-1">
@@ -1351,7 +1405,7 @@ export default function Concursos() {
                 c={c}
                 onOpenEquipos={abrirEquipos}
                 onEdit={abrirEditar}
-                onAddCoord={abrirAddCoord}
+                onAddCoord={(cc)=>{ setCursoCoord(cc); setAddCoordOpen(true)}}
               />
             ))}
           </div>
@@ -1366,11 +1420,115 @@ export default function Concursos() {
         equipos={equipos}
         cargando={equiposLoading}
         error={equiposError}
-        onEquipoUpdated={(eq) => setEquipos((prev) => prev.map((x) => (x.id === eq.id ? eq : x)))}
-        onEquipoDeleted={(id) => setEquipos((prev) => prev.filter((x) => x.id !== id))}
       />
       <EditCursoModal open={editOpen} onClose={() => setEditOpen(false)} curso={editCurso} onSaved={onSavedPatch} />
       <AddCoordinadorModal open={addCoordOpen} onClose={() => setAddCoordOpen(false)} curso={cursoCoord} />
     </section>
+  )
+}
+
+/* ---------------- Modal AÑADIR COORDINADOR (igual que antes) ---------------- */
+function AddCoordinadorModal({
+  open,
+  onClose,
+  curso,
+}: {
+  open: boolean
+  onClose: () => void
+  curso: Concurso | null
+}) {
+  const [saving, setSaving] = useState(false)
+  const [nombre, setNombre] = useState("")
+  const [correo, setCorreo] = useState("")
+  const [cargo, setCargo] = useState("Coordinador")
+  const [telefono, setTelefono] = useState("")
+
+  useEffect(() => {
+    if (!open) {
+      setNombre("")
+      setCorreo("")
+      setCargo("Coordinador")
+      setTelefono("")
+    }
+  }, [open])
+
+  const guardar = async () => {
+    if (!curso) return
+    if (!nombre.trim() || !correo.trim() || !cargo.trim()) {
+      alert("Completa nombre, correo y cargo.")
+      return
+    }
+    try {
+      setSaving(true)
+      await addDoc(collection(db, "coordinadores"), {
+        cursoId: curso.id,
+        concursoNombre: curso.nombre ?? "",
+        nombre: nombre.trim(),
+        email: correo.trim(),
+        cargo: cargo.trim(),
+        telefono: telefono.trim() || null,
+        creadoEn: serverTimestamp(),
+      })
+      onClose()
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo guardar el coordinador.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open || !curso) return null
+
+  return (
+    <AnimatePresence>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.98 }}
+        transition={{ duration: 0.18 }}
+        className="fixed inset-0 z-50 grid place-items-center p-4"
+      >
+        <div className={`${neoSurface} w-full max-w-md overflow-hidden`} onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
+            <h2 className="text-lg font-semibold">Añadir Coordinador</h2>
+            <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
+          </div>
+
+          <div className="p-5 space-y-3">
+            {[
+              { label: "Nombre", type: "text", value: nombre, set: setNombre, ph: "Nombre completo" },
+              { label: "Correo", type: "email", value: correo, set: setCorreo, ph: "correo@ejemplo.com" },
+              { label: "Cargo", type: "text", value: cargo, set: setCargo, ph: "Coordinador" },
+              { label: "Teléfono", type: "tel", value: telefono, set: setTelefono, ph: "(xxx) xxx xxxx" },
+            ].map((f, i) => (
+              <div key={i}>
+                <label className="text-sm text-gray-600">{f.label}</label>
+                <input
+                  type={f.type}
+                  value={f.value}
+                  onChange={(e) => f.set(e.target.value)}
+                  placeholder={f.ph}
+                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/60">
+            <Button variant="outline" className={`${pill} px-4 py-2`} onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button
+              variant="solid"
+              className="rounded-full px-5 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+              onClick={guardar}
+              disabled={saving}
+            >
+              {saving ? "Guardando…" : "Guardar"}
+            </Button>
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
   )
 }
