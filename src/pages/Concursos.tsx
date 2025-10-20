@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
+import { Pencil, Layers, FileText, UserPlus, HandCoins } from "lucide-react"
 
 // Firebase
 import { db, storage } from "../servicios/firebaseConfig"
@@ -18,10 +19,13 @@ import {
   getDocs,
   doc as fsDoc,
   updateDoc,
-  serverTimestamp, // 👈 para creadoEn y coordinadores
+  serverTimestamp,
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
+
+// 🔹 NEW: servicio de encuestas (usa los helpers que ya rescataste)
+import { useSurveys } from "../servicios/UseSurveys.ts"
 
 /* ---------------- Tipos ---------------- */
 export type EstadoConcurso = "Activo" | "Próximo" | "Finalizado"
@@ -78,25 +82,99 @@ const safeEstado = (v: unknown): EstadoConcurso => {
   return "Activo"
 }
 
-/* ---------------- UI helpers ---------------- */
-function Chip({ children, tone = "azul" }: { children: React.ReactNode; tone?: "azul" | "gris" | "verde" }) {
+/* ---------------- UI helpers (neumorphism + tu paleta) ---------------- */
+const neoSurface = [
+  "relative rounded-xl3",
+  "bg-gradient-to-br from-white to-gray-50",
+  "border border-white/60",
+  "shadow-[0_16px_40px_rgba(2,6,23,0.08),0_2px_4px_rgba(2,6,23,0.05)]",
+  "before:content-[''] before:absolute before:inset-0 before:rounded-xl3",
+  "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-10px_26px_rgba(2,6,23,0.06)]",
+  "before:pointer-events-none",
+].join(" ")
+
+const neoInset = [
+  "rounded-xl",
+  "bg-gradient-to-br from-white to-gray-50",
+  "border border-white/60",
+  "shadow-inner shadow-black/10",
+].join(" ")
+
+const pill = [
+  "relative",
+  "rounded-full",
+  "bg-white",
+  "border border-white/60",
+  "shadow-[0_8px_24px_rgba(2,6,23,0.06)]",
+  "before:content-[''] before:absolute before:inset-px before:rounded-full",
+  "before:pointer-events-none",
+  "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]",
+].join(" ")
+
+/* Pills de estado */
+function Chip({
+  children,
+  tone = "azul",
+}: {
+  children: React.ReactNode
+  tone?: "azul" | "gris" | "verde"
+}) {
   const map: Record<"azul" | "gris" | "verde", string> = {
-    azul: "bg-gray-100 text-tecnm-azul",
-    gris: "bg-gray-100 text-gray-700",
-    verde: "bg-green-100 text-green-700",
+    azul: `${pill} px-3 py-1 text-[11px] font-medium bg-white text-tecnm-azul`,
+    gris: `${pill} px-3 py-1 text-[11px] font-medium bg-white text-gray-700`,
+    verde: `${pill} px-3 py-1 text-[11px] font-medium bg-white text-tecnm-gris10`,
   }
-  return <span className={`px-2 py-0.5 text-xs rounded-full ${map[tone]}`}>{children}</span>
+  return <span className={map[tone]}>{children}</span>
 }
 
+/* Barra de progreso */
 function BarraProgreso({ actual, total }: { actual: number; total: number }) {
   const pct = Math.min(100, Math.round((actual / Math.max(1, total)) * 100))
   return (
-    <div>
-      <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
-        <div className="h-2 rounded-full bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 transition-all" style={{ width: `${pct}%` }} />
+    <div className="space-y-1">
+      <div className="h-2.5 w-full rounded-full bg-gradient-to-br from-white to-gray-50 border border-white/70 shadow-inner">
+        <div
+          className="h-full rounded-full transition-all duration-300 ease-out bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700"
+          style={{ width: `${pct}%` }}
+        />
       </div>
-      <p className="mt-1 text-xs text-gray-600">{actual}/{total} participantes</p>
+      <p className="text-xs text-gray-600">
+        {actual}/{total} participantes
+      </p>
     </div>
+  )
+}
+
+/* Botón icónico */
+function IconBtn({
+  title,
+  onClick,
+  variant = "outline",
+  children,
+}: {
+  title: string
+  onClick: () => void
+  variant?: "primary" | "outline"
+  children: React.ReactNode
+}) {
+  const base =
+    "h-9 w-9 grid place-items-center rounded-full transition active:scale-95 focus:outline-none"
+  const styles =
+    variant === "primary"
+      ? "text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+      : `${pill} bg-white text-tecnm-azul hover:brightness-[1.02]`
+  return (
+    <button
+      title={title}
+      aria-label={title}
+      className={`${base} ${styles}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -127,6 +205,23 @@ function EditCursoModal({
   const [preview, setPreview] = useState<string | undefined>(undefined)
   const [jumping, setJumping] = useState(false)
 
+  // 🔹 NEW: survey service
+  const { getByCourse, createForCourse, setSurveySlug } = useSurveys()
+  const [encuestaId, setEncuestaId] = useState<string | null>(null)
+  const [publicLink, setPublicLink] = useState<string>("")
+  const [copiado, setCopiado] = useState(false)
+  const [linkLoading, setLinkLoading] = useState(false)
+
+  const slugify = (str = "") =>
+    String(str)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80)
+
   useEffect(() => {
     if (!curso) return
     setNombre(curso.nombre || "")
@@ -141,6 +236,38 @@ function EditCursoModal({
     setFile(null)
   }, [curso])
 
+  // 🔹 NEW: al abrir modal, intenta cargar encuesta existente y su link
+  useEffect(() => {
+    const load = async () => {
+      if (!open || !curso?.id) return
+      try {
+        const list = await getByCourse(curso.id)
+        if (list.length) {
+          const d: any = list[0]
+          setEncuestaId(d.id)
+          let link = d.linkBySlug || d.link || ""
+          if (!d.linkBySlug && d.id) {
+            const res = await setSurveySlug(
+              d.id,
+              slugify(`${curso.nombre || "registro"}-${curso.id}`)
+            )
+            link = res.linkBySlug
+          }
+          setPublicLink(link)
+        } else {
+          setEncuestaId(null)
+          setPublicLink("")
+        }
+      } catch (e) {
+        console.error(e)
+        setEncuestaId(null)
+        setPublicLink("")
+      }
+    }
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, curso?.id])
+
   if (!open || !curso) return null
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -150,7 +277,6 @@ function EditCursoModal({
     const url = URL.createObjectURL(f)
     setPreview(url)
   }
-  const quitarPortada = () => { setFile(null); setPreview(undefined) }
 
   const guardar = async () => {
     try {
@@ -217,58 +343,88 @@ function EditCursoModal({
     }
   }
 
-  /** Busca/crea la encuesta ligada a este curso y retorna su ID */
-  const ensureEncuesta = async (cursoId: string): Promise<string> => {
-    const qy = query(collection(db, "encuestas"), where("cursoId", "==", cursoId))
-    const snap = await getDocs(qy)
-    if (!snap.empty) return snap.docs[0].id
+  // 🔹 NEW: generar/obtener link público con useSurveys
+  const generarLink = async () => {
+    if (!curso?.id) return
+    try {
+      setLinkLoading(true)
+      const existentes = await getByCourse(curso.id)
+      if (existentes.length) {
+        const d: any = existentes[0]
+        setEncuestaId(d.id)
+        if (d.linkBySlug) {
+          setPublicLink(d.linkBySlug)
+          return
+        }
+        const res = await setSurveySlug(
+          d.id,
+          slugify(`${curso.nombre || nombre || "registro"}-${curso.id}`)
+        )
+        setPublicLink(res.linkBySlug)
+        return
+      }
 
-    const baseDoc = {
-      cursoId,
-      creadoEn: Timestamp.now(),
-      creadoPor: null as string | null,
-      camposPreestablecidos: {
-        nombreEquipo: true,
-        nombreLider: true,
-        contactoEquipo: true,
-        categoria: true,
-        cantidadParticipantes: true,
-      },
-      cantidadParticipantes: 1,
-      categorias: [] as string[],
-      apariencia: {
-        fondoColor: "#f8fafc",
-        tituloColor: "#0f172a",
-        textoColor: "#0f172a",
-        overlay: 0.35,
-        fondoImagenUrl: "",
-        titulo: "Título de ejemplo",
-        subtitulo: "Texto de ejemplo del formulario",
-      },
-      preguntasPersonalizadas: [] as any[],
-      habilitado: true,
+      // Crear nueva encuesta ligada al curso
+      const created = await createForCourse({
+        cursoId: curso.id,
+        titulo: `Registro de Grupos – ${nombre || curso.nombre || "Curso"}`,
+        descripcion: descripcion || "",
+        cantidadParticipantes: 4,
+        camposPreestablecidos: {
+          nombreEquipo: true,
+          nombreLider: true,
+          contactoEquipo: true,
+          categoria: true,
+          cantidadParticipantes: true,
+        },
+        categorias: [], // agrega si tu curso trae categorías
+      })
+      setEncuestaId(created.id)
+      setPublicLink(created.linkBySlug || created.link)
+    } finally {
+      setLinkLoading(false)
     }
-    const refDoc = await addDoc(collection(db, "encuestas"), baseDoc)
-    return refDoc.id
   }
 
+  const copiarLink = async () => {
+    if (!publicLink) return
+    try {
+      await navigator.clipboard.writeText(publicLink)
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 1500)
+    } catch {}
+  }
+
+  // 👉 Builder: asegura encuesta y navega
   const gotoBuilder = async () => {
     try {
       setJumping(true)
-      const encuestaId = await ensureEncuesta(curso.id)
+      let id = encuestaId
+      if (!id) {
+        const existentes = await getByCourse(curso.id)
+        if (existentes.length) {
+          id = existentes[0].id
+        } else {
+          const created = await createForCourse({
+            cursoId: curso.id,
+            titulo: `Registro de Grupos – ${nombre || curso.nombre || "Curso"}`,
+            descripcion: descripcion || "",
+            cantidadParticipantes: 4,
+            camposPreestablecidos: {
+              nombreEquipo: true,
+              nombreLider: true,
+              contactoEquipo: true,
+              categoria: true,
+              cantidadParticipantes: true,
+            },
+            categorias: [],
+          })
+          id = created.id
+        }
+        setEncuestaId(id!)
+      }
       onClose()
-      navigate(`/formulario-builder/${encuestaId}`)
-    } finally {
-      setJumping(false)
-    }
-  }
-
-  const gotoPublic = async () => {
-    try {
-      setJumping(true)
-      const encuestaId = await ensureEncuesta(curso.id)
-      onClose()
-      navigate(`/formulario-publico/${encuestaId}`)
+      navigate(`/formulario-builder/${id}`)
     } finally {
       setJumping(false)
     }
@@ -276,7 +432,13 @@ function EditCursoModal({
 
   return (
     <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -284,10 +446,19 @@ function EditCursoModal({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center justify-between px-5 py-4 border-b">
+        <div
+          className={`${neoSurface} w-full max-w-3xl overflow-hidden`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
             <h2 className="text-lg font-semibold">Editar curso</h2>
-            <button onClick={onClose} className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50">✕</button>
+            <button
+              onClick={onClose}
+              className={`${pill} h-9 px-3 text-sm`}
+              aria-label="Cerrar"
+            >
+              ✕
+            </button>
           </div>
 
           <div className="p-5 space-y-4 max-h-[75vh] overflow-auto">
@@ -296,8 +467,22 @@ function EditCursoModal({
               <p className="font-medium mb-2">Imagen del Curso</p>
               {preview ? (
                 <div className="relative inline-block">
-                  <img src={preview} alt="portada" className="h-32 w-32 object-cover rounded-xl" />
-                  <button type="button" onClick={() => { setFile(null); setPreview(undefined) }} className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-red-600 text-white text-xs" title="Quitar portada">x</button>
+                  <img
+                    src={preview}
+                    alt="portada"
+                    className="h-32 w-32 object-cover rounded-xl border border-white/60 shadow-soft"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFile(null)
+                      setPreview(undefined)
+                    }}
+                    className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-rose-600 text-white text-xs shadow"
+                    title="Quitar portada"
+                  >
+                    x
+                  </button>
                 </div>
               ) : (
                 <label className="text-tecnm-azul cursor-pointer underline">
@@ -317,21 +502,28 @@ function EditCursoModal({
 
             {/* Básicos */}
             <div className="grid md:grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-gray-600">Título del Curso *</label>
-                <input className="w-full rounded-xl border px-3 py-2" value={nombre} onChange={(e)=>setNombre(e.target.value)} />
-              </div>
-              <div>
-                <label className="text-sm text-gray-600">Instructor *</label>
-                <input className="w-full rounded-xl border px-3 py-2" value={instructor} onChange={(e)=>setInstructor(e.target.value)} />
-              </div>
-              <div>
-                <label className="text-sm text-gray-600">Ubicación</label>
-                <input className="w-full rounded-xl border px-3 py-2" value={sede} onChange={(e)=>setSede(e.target.value)} />
-              </div>
+              {[
+                { label: "Título del Curso *", val: nombre, set: setNombre, type: "text" },
+                { label: "Instructor *", val: instructor, set: setInstructor, type: "text" },
+                { label: "Ubicación", val: sede, set: setSede, type: "text" },
+              ].map((f, i) => (
+                <div key={i}>
+                  <label className="text-sm text-gray-600">{f.label}</label>
+                  <input
+                    className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                    value={f.val}
+                    onChange={(e) => f.set(e.target.value)}
+                    type={f.type}
+                  />
+                </div>
+              ))}
               <div>
                 <label className="text-sm text-gray-600">Categoría *</label>
-                <select className="w-full rounded-xl border px-3 py-2" value={categoria} onChange={(e)=>setCategoria(e.target.value)}>
+                <select
+                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  value={categoria}
+                  onChange={(e) => setCategoria(e.target.value)}
+                >
                   <option value="">Selecciona…</option>
                   <option value="Ventas">Ventas</option>
                   <option value="Tecnología">Tecnología</option>
@@ -340,17 +532,32 @@ function EditCursoModal({
               </div>
               <div>
                 <label className="text-sm text-gray-600">Fecha de Inicio *</label>
-                <input type="date" className="w-full rounded-xl border px-3 py-2" value={fechaInicio} onChange={(e)=>setFechaInicio(e.target.value)} />
+                <input
+                  type="date"
+                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  value={fechaInicio}
+                  onChange={(e) => setFechaInicio(e.target.value)}
+                />
               </div>
               <div>
                 <label className="text-sm text-gray-600">Fecha de Fin *</label>
-                <input type="date" className="w-full rounded-xl border px-3 py-2" value={fechaFin} onChange={(e)=>setFechaFin(e.target.value)} />
+                <input
+                  type="date"
+                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  value={fechaFin}
+                  onChange={(e) => setFechaFin(e.target.value)}
+                />
               </div>
             </div>
 
             <div>
               <label className="text-sm text-gray-600">Descripción</label>
-              <textarea className="w-full rounded-xl border px-3 py-2" rows={3} value={descripcion} onChange={(e)=>setDescripcion(e.target.value)} />
+              <textarea
+                className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                rows={3}
+                value={descripcion}
+                onChange={(e) => setDescripcion(e.target.value)}
+              />
             </div>
 
             {/* Tipo */}
@@ -359,16 +566,16 @@ function EditCursoModal({
               <div className="grid md:grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={()=>setTipoCurso("personal")}
-                  className={`text-left p-3 rounded-xl border ${tipoCurso==="personal" ? "border-emerald-500 bg-emerald-50" : "border-gray-200 bg-white"}`}
+                  onClick={() => setTipoCurso("personal")}
+                  className={`text-left p-3 ${neoInset} ${tipoCurso === "personal" ? "ring-2 ring-tecnm-azul/30" : ""}`}
                 >
                   <div className="font-medium">Por Personal</div>
                   <div className="text-sm text-gray-600">Gestión individual de participantes</div>
                 </button>
                 <button
                   type="button"
-                  onClick={()=>setTipoCurso("grupos")}
-                  className={`text-left p-3 rounded-xl border ${tipoCurso==="grupos" ? "border-emerald-500 bg-emerald-50" : "border-gray-200 bg-white"}`}
+                  onClick={() => setTipoCurso("grupos")}
+                  className={`text-left p-3 ${neoInset} ${tipoCurso === "grupos" ? "ring-2 ring-tecnm-azul/30" : ""}`}
                 >
                   <div className="font-medium">Por Grupos</div>
                   <div className="text-sm text-gray-600">Gestión por grupos o lotes</div>
@@ -377,26 +584,71 @@ function EditCursoModal({
             </div>
 
             {tipoCurso === "grupos" && (
-              <div className="rounded-xl border bg-gray-50 p-3">
-                <p className="text-sm font-medium mb-2">Formulario de grupos</p>
+              <div className={`${neoInset} p-3 space-y-3`}>
+                <p className="text-sm font-medium">Formulario de grupos</p>
+
+                {/* Botón para configurar el builder */}
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="solid" onClick={gotoBuilder} disabled={jumping}>
+                  <Button
+                    variant="solid"
+                    className="rounded-full px-4 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+                    onClick={gotoBuilder}
+                    disabled={jumping}
+                  >
                     {jumping ? "Abriendo…" : "Configurar formulario"}
                   </Button>
-                  <Button variant="outline" onClick={gotoPublic} disabled={jumping}>
-                    {jumping ? "Abriendo…" : "Ver/editar registro público"}
-                  </Button>
                 </div>
-                <p className="text-[11px] text-gray-500 mt-2">
+
+                {/* 🔹 NEW: Generar/mostrar link público */}
+                <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                  <input
+                    readOnly
+                    value={publicLink}
+                    placeholder="Aún no hay link. Genera uno."
+                    className="flex-1 border rounded-lg px-3 py-2 text-sm bg-white"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      variant="solid"
+                      className="rounded-full px-4 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+                      onClick={generarLink}
+                      disabled={linkLoading}
+                    >
+                      {publicLink ? "Regenerar/Obtener link" : "Generar link"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className={`${pill} px-4 py-2 text-tecnm-azul`}
+                      onClick={copiarLink}
+                      disabled={!publicLink}
+                    >
+                      {copiado ? "Copiado ✓" : "Copiar"}
+                    </Button>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-gray-500">
                   Se creará automáticamente la encuesta del curso si aún no existe.
                 </p>
               </div>
             )}
           </div>
 
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t">
-            <Button variant="outline" onClick={onClose} disabled={saving || jumping}>Cancelar</Button>
-            <Button variant="solid" onClick={guardar} disabled={saving || jumping}>
+          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/60">
+            <Button
+              variant="outline"
+              className={`${pill} px-4 py-2`}
+              onClick={onClose}
+              disabled={saving || jumping}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="solid"
+              className="rounded-full px-5 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+              onClick={guardar}
+              disabled={saving || jumping}
+            >
               {saving ? "Guardando…" : "Guardar cambios"}
             </Button>
           </div>
@@ -406,7 +658,7 @@ function EditCursoModal({
   )
 }
 
-/* ---------------- NUEVO: Modal AÑADIR COORDINADOR ---------------- */
+/* ---------------- Modal AÑADIR COORDINADOR ---------------- */
 function AddCoordinadorModal({
   open,
   onClose,
@@ -461,7 +713,7 @@ function AddCoordinadorModal({
 
   return (
     <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30" onClick={onClose} />
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -469,34 +721,40 @@ function AddCoordinadorModal({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center justify-between px-5 py-4 border-b">
+        <div className={`${neoSurface} w-full max-w-md overflow-hidden`} onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
             <h2 className="text-lg font-semibold">Añadir Coordinador</h2>
-            <button onClick={onClose} className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50" aria-label="Cerrar">✕</button>
+            <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
           </div>
 
           <div className="p-5 space-y-3">
-            <div>
-              <label className="text-sm text-gray-600">Nombre</label>
-              <input className="mt-1 w-full rounded-xl border px-3 py-2" value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre completo" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600">Correo</label>
-              <input type="email" className="mt-1 w-full rounded-xl border px-3 py-2" value={correo} onChange={(e) => setCorreo(e.target.value)} placeholder="correo@ejemplo.com" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600">Cargo</label>
-              <input className="mt-1 w-full rounded-xl border px-3 py-2" value={cargo} onChange={(e) => setCargo(e.target.value)} placeholder="Coordinador" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600">Teléfono</label>
-              <input type="tel" className="mt-1 w-full rounded-xl border px-3 py-2" value={telefono} onChange={(e) => setTelefono(e.target.value)} placeholder="(xxx) xxx xxxx" />
-            </div>
+            {[
+              { label: "Nombre", type: "text", value: nombre, set: setNombre, ph: "Nombre completo" },
+              { label: "Correo", type: "email", value: correo, set: setCorreo, ph: "correo@ejemplo.com" },
+              { label: "Cargo", type: "text", value: cargo, set: setCargo, ph: "Coordinador" },
+              { label: "Teléfono", type: "tel", value: telefono, set: setTelefono, ph: "(xxx) xxx xxxx" },
+            ].map((f, i) => (
+              <div key={i}>
+                <label className="text-sm text-gray-600">{f.label}</label>
+                <input
+                  type={f.type as any}
+                  value={f.value as any}
+                  onChange={(e) => f.set((e.target as HTMLInputElement).value)}
+                  placeholder={f.ph}
+                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                />
+              </div>
+            ))}
           </div>
 
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t">
-            <Button variant="outline" onClick={onClose} disabled={saving}>Cancelar</Button>
-            <Button variant="solid" onClick={guardar} disabled={saving}>
+          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/60">
+            <Button variant="outline" className={`${pill} px-4 py-2`} onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button
+              variant="solid"
+              className="rounded-full px-5 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+              onClick={guardar}
+              disabled={saving}
+            >
               {saving ? "Guardando…" : "Guardar"}
             </Button>
           </div>
@@ -513,26 +771,26 @@ function ModalEquipos({
   if (!open) return null
   return (
     <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[1px]" onClick={onClose} />
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
       <motion.div initial={{ opacity: 0, y: 20, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.98 }} transition={{ duration: 0.18 }} className="fixed inset-0 z-50 grid place-items-center p-4">
-        <div className="w-full max-w-4xl rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden" onClick={(e)=>e.stopPropagation()}>
-          <div className="flex items-center justify-between px-5 py-4 border-b">
+        <div className={`${neoSurface} w-full max-w-4xl overflow-hidden`} onClick={(e)=>e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
             <div>
               <h2 className="text-lg font-semibold">Equipos – {concurso?.nombre ?? "Concurso"}</h2>
               <p className="text-xs text-gray-500">{concurso?.categoria ?? "Categoría"} · {concurso?.sede ?? "Sede"}</p>
             </div>
-            <button onClick={onClose} className="h-9 w-9 grid place-items-center rounded-lg border border-gray-200 hover:bg-gray-50" aria-label="Cerrar">✕</button>
+            <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
           </div>
 
           <div className="p-5 max-h-[70vh] overflow-auto">
-            {cargando && <Card className="p-6 text-sm text-gray-600">Cargando equipos…</Card>}
-            {error && !cargando && <Card className="p-6 text-sm text-red-600">{error}</Card>}
-            {!cargando && !error && equipos.length === 0 && <Card className="p-6 text-sm text-gray-600">No se encontraron respuestas para este concurso.</Card>}
+            {cargando && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
+            {error && !cargando && <Card className={`${neoInset} p-6 text-sm text-rose-600`}>{error}</Card>}
+            {!cargando && !error && equipos.length === 0 && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>}
 
             {!cargando && !error && equipos.length > 0 && (
               <div className="grid gap-3 sm:grid-cols-2">
                 {equipos.map((eq) => (
-                  <Card key={eq.id} className="p-4 border-gray-100">
+                  <Card key={eq.id} className={`p-4 border-0 ${neoSurface}`}>
                     <div className="flex items-start gap-3">
                       <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
                         {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
@@ -573,7 +831,7 @@ function ModalEquipos({
 }
 function Info({label, value}:{label:string; value?:string}) {
   return (
-    <div className="rounded-lg border bg-gray-50 p-2">
+    <div className={`${neoInset} p-2`}>
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
       <p className="truncate">{value || "—"}</p>
     </div>
@@ -597,14 +855,17 @@ function TarjetaConcurso({
 
   return (
     <motion.div layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
-      <Card className="p-0 overflow-hidden rounded-2xl border border-gray-100 hover:shadow-lg hover:border-gray-200 transition cursor-pointer bg-white" onClick={() => onOpenEquipos(c)}>
+      <Card
+        className={`p-0 overflow-hidden cursor-pointer border-0 ${neoSurface} transition`}
+        onClick={() => onOpenEquipos(c)}
+      >
         {/* Portada */}
         {c.portadaUrl ? (
           <div className="h-40 w-full bg-gray-100">
             <img src={c.portadaUrl} alt="portada" className="h-full w-full object-cover" />
           </div>
         ) : (
-          <div className="h-2 w-full bg-gray-100" />
+          <div className="h-2 w-full bg-gradient-to-r from-gray-50 to-white" />
         )}
 
         {/* Contenido */}
@@ -626,29 +887,23 @@ function TarjetaConcurso({
             </div>
           </div>
 
+          {/* Acciones */}
           <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
-            <Button size="sm" variant="solid" className="bg-tecnm-azul text-white hover:bg-tecnm-azul-700" onClick={() => onEdit(c)}>
-              Editar
-            </Button>
-            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
-              Plantillas
-            </Button>
-            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
-              Constancias
-            </Button>
-            <Button size="sm" variant="outline" className="border-tecnm-azul text-tecnm-azul hover:bg-tecnm-azul/5" onClick={() => onAddCoord(c)}>
-              Añadir coordinador
-            </Button>
-
-            {/* 👇 NUEVO: botón para asistencia & pago */}
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-              onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}
-            >
-              Asistencia & Pago
-            </Button>
+            <IconBtn title="Editar" variant="primary" onClick={() => onEdit(c)}>
+              <Pencil size={18} />
+            </IconBtn>
+            <IconBtn title="Plantillas" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
+              <Layers size={18} />
+            </IconBtn>
+            <IconBtn title="Constancias" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
+              <FileText size={18} />
+            </IconBtn>
+            <IconBtn title="Añadir coordinador" onClick={() => onAddCoord(c)}>
+              <UserPlus size={18} />
+            </IconBtn>
+            <IconBtn title="Asistencia & Pago" variant="primary" onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}>
+              <HandCoins size={18} />
+            </IconBtn>
           </div>
 
           <div className="pt-1">
@@ -821,7 +1076,7 @@ export default function Concursos() {
   }
 
   return (
-    <section className="space-y-5">
+    <section className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Concursos</h1>
@@ -829,47 +1084,63 @@ export default function Concursos() {
         </div>
 
         <div className="flex gap-2">
-          <Button variant="solid" onClick={abrirCrear}>Nuevo curso</Button>
+          <Button
+            variant="solid"
+            className="rounded-full px-4 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+            onClick={abrirCrear}
+          >
+            Nuevo curso
+          </Button>
           <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
         </div>
       </div>
 
       {/* Barra de acciones */}
-      <Card className="p-3">
+      <Card className={`p-4 border-0 ${neoSurface} overflow-visible`}>
+
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-2 overflow-auto">
+          <div className="flex items-center gap-2 overflow-x-auto overflow-y-visible py-1 -mx-1 px-1">
             {["Todos", "Activo", "Próximo", "Finalizado"].map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t as any)}
-                className={`px-3 py-1.5 rounded-full text-sm border transition ${tab === t ? "bg-tecnm-azul text-white border-tecnm-azul" : "bg-white hover:bg-gray-50 text-gray-700 border-gray-200"}`}
+                className={`${pill} px-4 py-1.5 text-sm transition`}
+                style={
+                  tab === t
+                    ? { background: "linear-gradient(90deg, var(--tw-gradient-from), var(--tw-gradient-to))" }
+                    : {}
+                }
               >
-                {t}
+                <span className={tab === t ? "text-white" : "text-gray-700"}>
+                  <span className={tab === t ? "bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 bg-clip-text text-transparent" : ""}>
+                    {t}
+                  </span>
+                </span>
               </button>
             ))}
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 shadow-sm">
-              <svg width="18" height="18" viewBox="0 0 24 24">
+            <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner`}>
+              <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
                 <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
               </svg>
-              <input value={busqueda} onChange={(e)=>setBusqueda(e.target.value)} placeholder="Buscar por nombre, sede o categoría…" className="w-56 md:w-72 outline-none text-sm" />
+              <input value={busqueda} onChange={(e)=>setBusqueda(e.target.value)} placeholder="Buscar por nombre, sede o categoría…" className="w-56 md:w-72 outline-none text-sm bg-transparent" />
             </div>
 
-            <select value={categoria} onChange={(e)=>setCategoria(e.target.value)} className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">
+            <select value={categoria} onChange={(e)=>setCategoria(e.target.value)} className={`${pill} bg-white px-3 py-2 text-sm`}>
               {(["Todas", ...Array.from(new Set(concursos.map((c) => c.categoria || "General")))]).map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
             </select>
 
-            <Button variant="outline" onClick={() => { setBusqueda(""); setCategoria("Todas"); setTab("Todos"); }}>
+            <Button variant="outline" className={`${pill} px-4 py-2`} onClick={() => { setBusqueda(""); setCategoria("Todas"); setTab("Todos"); }}>
               Restablecer filtros
             </Button>
           </div>
         </div>
       </Card>
 
-      {cargando && <Card className="p-8 text-center text-sm text-gray-600">Cargando concursos…</Card>}
-      {error && !cargando && <Card className="p-8 text-center text-sm text-red-600">{error}</Card>}
+      {cargando && <Card className={`${neoInset} p-8 text-center text-sm text-gray-600`}>Cargando concursos…</Card>}
+      {error && !cargando && <Card className={`${neoInset} p-8 text-center text-sm text-rose-600`}>{error}</Card>}
 
       {!cargando && !error && (
         <div className="flex items-center justify-between text-sm text-gray-600">
@@ -879,7 +1150,7 @@ export default function Concursos() {
 
       {!cargando && !error && (
         resultados.length === 0 ? (
-          <Card className="p-8 text-center text-sm text-gray-600">No se encontraron concursos con esos filtros.</Card>
+          <Card className={`${neoInset} p-8 text-center text-sm text-gray-600`}>No se encontraron concursos con esos filtros.</Card>
         ) : (
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {resultados.map((c) => (

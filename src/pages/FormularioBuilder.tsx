@@ -1,19 +1,11 @@
 // src/pages/FormularioBuilder.tsx
 import React, { useEffect, useMemo, useState } from "react"
 import { useParams, Link } from "react-router-dom"
-import { motion } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 
-// Firebase
-import { db, storage } from "../servicios/firebaseConfig"
-import {
-  doc,
-  getDoc,
-  setDoc,
-  serverTimestamp,
-} from "firebase/firestore"
-import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage"
+// API compat centralizada
+import { useSurveys, getById } from "../servicios/UseSurveys.ts"
 
 /* ========= Tipos ========= */
 type CampoPresetFlags = {
@@ -26,7 +18,7 @@ type CampoPresetFlags = {
 type TipoPregunta = "texto" | "select" | "radio" | "checkbox"
 
 type Pregunta = {
-  id: string       // p1, p2, ...
+  id: string // p1, p2, ...
   titulo: string
   tipo: TipoPregunta
   opciones?: string[]
@@ -65,7 +57,9 @@ const nextId = (list: Pregunta[]) => {
 /* ========= Builder ========= */
 export default function FormularioBuilder() {
   const { encuestaId } = useParams<{ encuestaId: string }>()
-  const [loading, setLoading] = useState(true)
+  const { updateSurvey, updateSurveyTheme, loading } = useSurveys()
+
+  const [initialLoaded, setInitialLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -95,68 +89,89 @@ export default function FormularioBuilder() {
   const [npReq, setNpReq] = useState(false)
   const [npOpciones, setNpOpciones] = useState<string[]>([""])
 
-  /* ----- Cargar o crear encuesta ----- */
+  /* ----- Cargar encuesta ----- */
   useEffect(() => {
     const run = async () => {
       try {
         if (!encuestaId) {
           setError("Falta encuestaId en la URL.")
-          setLoading(false)
-          return
-        }
-        const ref = doc(db, "encuestas", encuestaId)
-        const snap = await getDoc(ref)
-
-        if (!snap.exists()) {
-          // Crea con defaults suaves
-          await setDoc(ref, {
-            createdAt: serverTimestamp(),
-            camposPreestablecidos: presets,
-            categorias,
-            cantidadParticipantes,
-            preguntas: [],
-            apariencia,
-          }, { merge: true })
-          setLoading(false)
+          setInitialLoaded(true)
           return
         }
 
-        const data = (snap.data() || {}) as EncuestaDoc
-        setPresets({
-          nombreEquipo: data.camposPreestablecidos?.nombreEquipo ?? true,
-          nombreLider: data.camposPreestablecidos?.nombreLider ?? true,
-          contactoEquipo: data.camposPreestablecidos?.contactoEquipo ?? true,
-          categoria: data.camposPreestablecidos?.categoria ?? true,
-        })
-        setCategorias(Array.isArray(data.categorias) && data.categorias.length ? data.categorias : ["Opción 1"])
-        setCantidadParticipantes(
-          typeof data.cantidadParticipantes === "number" ? data.cantidadParticipantes : 4
-        )
-        setPreguntas(Array.isArray(data.preguntas) ? data.preguntas : [])
-        setApariencia({
+        const doc = (await getById(encuestaId)) as any
+        if (!doc) {
+          setError("No se encontró la encuesta.")
+          setInitialLoaded(true)
+          return
+        }
+
+        const data = doc as EncuestaDoc & any
+
+        // leer compat y nuevo indistintamente
+        const campos = data.camposPreestablecidos || data.camposPreestablecidos || {}
+        const cats: string[] =
+          Array.isArray(data.categorias)
+            ? data.categorias
+            : Array.isArray(data.formularioGrupos?.categorias)
+            ? data.formularioGrupos.categorias
+            : ["Opción 1"]
+
+        const cant =
+          typeof data.cantidadParticipantes === "number"
+            ? data.cantidadParticipantes
+            : typeof data.formularioGrupos?.cantidadParticipantes === "number"
+            ? data.formularioGrupos.cantidadParticipantes
+            : 4
+
+        const qs: Pregunta[] = Array.isArray(data.preguntas)
+          ? data.preguntas
+          : Array.isArray(data.preguntasPersonalizadas)
+          ? data.preguntasPersonalizadas.map((x: any) => ({
+              id: x.id,
+              titulo: x.etiqueta,
+              tipo: (x.tipo === "text" ? "texto" : x.tipo) as TipoPregunta,
+              opciones: x.opciones || [],
+              requerido: !!(x.requerida || x.requerido),
+            }))
+          : []
+
+        const ap: Apariencia = {
           colorTitulo: data.apariencia?.colorTitulo ?? "#0f172a",
           colorTexto: data.apariencia?.colorTexto ?? "#0f172a",
           colorFondo: data.apariencia?.colorFondo ?? "#ffffff",
-          overlay: typeof data.apariencia?.overlay === "number" ? data.apariencia?.overlay : 0.35,
-          bgImageUrl: data.apariencia?.bgImageUrl ?? "",
+          overlay:
+            typeof data.apariencia?.overlay === "number"
+              ? data.apariencia.overlay
+              : 0.35,
+          bgImageUrl: data.apariencia?.bgImageUrl ?? data.theme?.backgroundImage ?? "",
+        }
+
+        setPresets({
+          nombreEquipo: !!campos.nombreEquipo,
+          nombreLider: !!campos.nombreLider,
+          contactoEquipo: !!campos.contactoEquipo,
+          categoria: !!campos.categoria,
         })
-        setLoading(false)
+        setCategorias(cats.length ? cats : ["Opción 1"])
+        setCantidadParticipantes(cant)
+        setPreguntas(qs)
+        setApariencia(ap)
+        setInitialLoaded(true)
       } catch (e) {
         console.error(e)
         setError("No fue posible cargar la configuración.")
-        setLoading(false)
+        setInitialLoaded(true)
       }
     }
     run()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encuestaId])
 
-  /* ----- Guardar ----- */
+  /* ----- Guardar (usa useSurveys) ----- */
   const guardar = async () => {
     if (!encuestaId) return
     try {
       setSaving(true)
-      const refDoc = doc(db, "encuestas", encuestaId)
 
       const cleanPreguntas: Pregunta[] = preguntas.map((p) => ({
         id: p.id,
@@ -168,29 +183,40 @@ export default function FormularioBuilder() {
           : { opciones: (p.opciones || []).map((o) => o.trim()).filter(Boolean) }),
       }))
 
-      await setDoc(
-        refDoc,
-        {
-          updatedAt: serverTimestamp(),
-          camposPreestablecidos: {
-            nombreEquipo: !!presets.nombreEquipo,
-            nombreLider: !!presets.nombreLider,
-            contactoEquipo: !!presets.contactoEquipo,
-            categoria: !!presets.categoria,
-          },
-          categorias: categorias.map((c) => c.trim()).filter(Boolean),
-          cantidadParticipantes: clamp(Number(cantidadParticipantes), 1, 15),
-          preguntas: cleanPreguntas,
-          apariencia: {
-            colorTitulo: apariencia.colorTitulo,
-            colorTexto: apariencia.colorTexto,
-            colorFondo: apariencia.colorFondo,
-            overlay: clamp(Number(apariencia.overlay ?? 0.35), 0, 1),
-            bgImageUrl: apariencia.bgImageUrl || "",
-          },
+      // 1) guarda campos principales (y compat se hace dentro de updateSurvey)
+      await updateSurvey(encuestaId, {
+        camposPreestablecidos: {
+          nombreEquipo: !!presets.nombreEquipo,
+          nombreLider: !!presets.nombreLider,
+          contactoEquipo: !!presets.contactoEquipo,
+          categoria: !!presets.categoria,
         },
-        { merge: true }
+        categorias: categorias.map((c) => c.trim()).filter(Boolean),
+        cantidadParticipantes: clamp(Number(cantidadParticipantes), 1, 15),
+        preguntas: cleanPreguntas,
+        apariencia: {
+          colorTitulo: apariencia.colorTitulo,
+          colorTexto: apariencia.colorTexto,
+          colorFondo: apariencia.colorFondo,
+          overlay: clamp(Number(apariencia.overlay ?? 0.35), 0, 1),
+          bgImageUrl: apariencia.bgImageUrl || "",
+        },
+      })
+
+      // 2) espejo en theme (compat viejo)
+      await updateSurveyTheme(
+        encuestaId,
+        {
+          backgroundColor: apariencia.colorFondo,
+          titleColor: apariencia.colorTitulo,
+          textColor: apariencia.colorTexto,
+          overlayOpacity: clamp(Number(apariencia.overlay ?? 0.35), 0, 1),
+        },
+        {
+          bgDataUrl: apariencia.bgImageUrl || undefined,
+        }
       )
+
       alert("Configuración guardada.")
     } catch (e) {
       console.error(e)
@@ -200,22 +226,17 @@ export default function FormularioBuilder() {
     }
   }
 
-  /* ----- Imagen de fondo ----- */
+  /* ----- Imagen de fondo (DataURL, compat con useSurveys.updateSurveyTheme) ----- */
   const onBgFile = async (file: File) => {
-    if (!encuestaId || !file) return
-    try {
-      const path = `encuestas/${encuestaId}/bg-${Date.now()}-${file.name}`
-      const r = ref(storage, path)
-      await uploadBytes(r, file)
-      const url = await getDownloadURL(r)
-      setApariencia((a) => ({ ...a, bgImageUrl: url }))
-    } catch (e) {
-      console.error(e)
-      alert("No se pudo subir la imagen.")
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "")
+      setApariencia((a) => ({ ...a, bgImageUrl: dataUrl }))
     }
+    reader.readAsDataURL(file)
   }
-
-  const quitarBg = async () => {
+  const quitarBg = () => {
     setApariencia((a) => ({ ...a, bgImageUrl: "" }))
   }
 
@@ -229,7 +250,8 @@ export default function FormularioBuilder() {
   }
   const setCat = (i: number, v: string) =>
     setCategorias((prev) => prev.map((c, j) => (j === i ? v : c)))
-  const delCat = (i: number) => setCategorias((prev) => prev.filter((_, j) => j !== i))
+  const delCat = (i: number) =>
+    setCategorias((prev) => prev.filter((_, j) => j !== i))
 
   /* ----- Preguntas: crear / editar / eliminar ----- */
   const resetNueva = () => {
@@ -286,7 +308,9 @@ export default function FormularioBuilder() {
     () => ({
       backgroundColor: apariencia.colorFondo || "#fff",
       color: apariencia.colorTexto || "#0f172a",
-      backgroundImage: apariencia.bgImageUrl ? `url(${apariencia.bgImageUrl})` : undefined,
+      backgroundImage: apariencia.bgImageUrl
+        ? `url(${apariencia.bgImageUrl})`
+        : undefined,
       backgroundSize: "cover",
       backgroundPosition: "center",
       position: "relative",
@@ -294,7 +318,7 @@ export default function FormularioBuilder() {
     [apariencia]
   )
 
-  if (loading) {
+  if (!initialLoaded) {
     return (
       <div className="p-6">
         <Card className="p-6">Cargando constructor…</Card>
@@ -319,7 +343,7 @@ export default function FormularioBuilder() {
               <Button variant="outline">Ver formulario público</Button>
             </Link>
           )}
-          <Button onClick={guardar} disabled={saving}>
+          <Button onClick={guardar} disabled={saving || loading}>
             {saving ? "Guardando…" : "Guardar cambios"}
           </Button>
         </div>
@@ -383,9 +407,7 @@ export default function FormularioBuilder() {
           </div>
 
           <div className="space-y-2 md:col-span-2">
-            <label className="text-sm text-slate-700">
-              Opacidad del overlay (0–1)
-            </label>
+            <label className="text-sm text-slate-700">Opacidad del overlay (0–1)</label>
             <input
               type="number"
               step={0.05}
@@ -393,7 +415,10 @@ export default function FormularioBuilder() {
               max={1}
               value={apariencia.overlay ?? 0.35}
               onChange={(e) =>
-                setApariencia((a) => ({ ...a, overlay: clamp(Number(e.target.value), 0, 1) }))
+                setApariencia((a) => ({
+                  ...a,
+                  overlay: clamp(Number(e.target.value), 0, 1),
+                }))
               }
               className="w-32 rounded-xl border px-3 py-2"
             />
@@ -480,7 +505,9 @@ export default function FormularioBuilder() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setCantidadParticipantes((n) => clamp(n - 1, 1, 15))}
+                onClick={() =>
+                  setCantidadParticipantes((n) => clamp(n - 1, 1, 15))
+                }
               >
                 –
               </Button>
@@ -497,12 +524,16 @@ export default function FormularioBuilder() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setCantidadParticipantes((n) => clamp(n + 1, 1, 15))}
+                onClick={() =>
+                  setCantidadParticipantes((n) => clamp(n + 1, 1, 15))
+                }
               >
                 +
               </Button>
             </div>
-            <p className="text-xs text-slate-500">Se usará en el formulario público.</p>
+            <p className="text-xs text-slate-500">
+              Se usará en el formulario público.
+            </p>
           </div>
         </div>
 
@@ -540,15 +571,15 @@ export default function FormularioBuilder() {
       <Card className="p-4 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Preguntas Personalizadas</h2>
-          <span className="text-sm text-slate-600">
-            {preguntas.length}/10
-          </span>
+          <span className="text-sm text-slate-600">{preguntas.length}/10</span>
         </div>
 
         {/* Nueva pregunta */}
         <div className="grid md:grid-cols-12 gap-2 items-end">
           <div className="md:col-span-5">
-            <label className="text-xs text-slate-600">Título de la pregunta *</label>
+            <label className="text-xs text-slate-600">
+              Título de la pregunta *
+            </label>
             <input
               value={npTitulo}
               onChange={(e) => setNpTitulo(e.target.value)}
@@ -598,7 +629,9 @@ export default function FormularioBuilder() {
                     <input
                       value={op}
                       onChange={(e) =>
-                        setNpOpciones((prev) => prev.map((x, j) => (j === i ? e.target.value : x)))
+                        setNpOpciones((prev) =>
+                          prev.map((x, j) => (j === i ? e.target.value : x))
+                        )
                       }
                       className="w-full rounded-xl border px-3 py-2"
                       placeholder={`Opción ${i + 1}`}
@@ -606,7 +639,9 @@ export default function FormularioBuilder() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setNpOpciones((prev) => prev.filter((_, j) => j !== i))}
+                      onClick={() =>
+                        setNpOpciones((prev) => prev.filter((_, j) => j !== i))
+                      }
                     >
                       Quitar
                     </Button>
@@ -653,7 +688,9 @@ export default function FormularioBuilder() {
                           setPregunta(q.id, {
                             tipo: e.target.value as TipoPregunta,
                             opciones:
-                              (e.target.value as TipoPregunta) === "texto" ? [] : (q.opciones || [""]),
+                              (e.target.value as TipoPregunta) === "texto"
+                                ? []
+                                : q.opciones || [""],
                           })
                         }
                       >
@@ -666,7 +703,9 @@ export default function FormularioBuilder() {
                         <input
                           type="checkbox"
                           checked={!!q.requerido}
-                          onChange={(e) => setPregunta(q.id, { requerido: e.target.checked })}
+                          onChange={(e) =>
+                            setPregunta(q.id, { requerido: e.target.checked })
+                          }
                         />
                         <span className="text-sm">Requerido</span>
                       </label>
@@ -742,7 +781,7 @@ export default function FormularioBuilder() {
             <Button variant="outline">Ver formulario público</Button>
           </Link>
         )}
-        <Button onClick={guardar} disabled={saving}>
+        <Button onClick={guardar} disabled={saving || loading}>
           {saving ? "Guardando…" : "Guardar cambios"}
         </Button>
       </div>

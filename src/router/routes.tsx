@@ -1,4 +1,3 @@
-// src/router/routes.tsx
 import { createBrowserRouter } from "react-router-dom"
 import AppLayout from "../layouts/AppLayout"
 
@@ -8,9 +7,9 @@ import Concursos from "../pages/Concursos"
 import Plantillas from "../pages/Plantillas"
 import Constancias from "../pages/Constancias"
 import Asistencias from "../pages/Asistencias"
-// Constructor y público
 import FormularioBuilder from "../pages/FormularioBuilder"
 import FormularioPublico from "../pages/FormularioPublico"
+import FormularioPublicoBySlug from "../pages/FormularioPublicoByslug" // ← NUEVO
 
 // (opcionales) placeholders
 const Equipos = () => <div>Equipos (próximo)</div>
@@ -27,7 +26,7 @@ export const router = createBrowserRouter([
       { path: "concursos/:concursoId/equipos", element: <Equipos /> },
       { path: "concursos/:concursoId/equipos/:equipoId/participantes", element: <Participantes /> },
       { path: "plantillas", element: <Plantillas /> },
-       { path: "asistencias", element: <Asistencias /> },
+      { path: "asistencias", element: <Asistencias /> },
       { path: "constancias", element: <Constancias /> },
 
       // Builder (con navbar)
@@ -37,6 +36,7 @@ export const router = createBrowserRouter([
 
   // Público (SIN navbar)
   { path: "/formulario-publico/:encuestaId", element: <FormularioPublico /> },
+  { path: "/registro/:slug", element: <FormularioPublicoBySlug /> }, // ← NUEVO
 
   // 404
   { path: "*", element: <div style={{ padding: 24 }}>Página no encontrada</div> },
