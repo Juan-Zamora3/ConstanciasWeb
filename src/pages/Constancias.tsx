@@ -6,14 +6,18 @@ import { Card } from "../components/ui/Card";
 import Button from "../components/ui/Button";
 
 import { db } from "../servicios/firebaseConfig";
+
+
+
+// + iconos
+import { Eye, Pencil, Trash2, Save, X } from "lucide-react"
+
+// + Firestore (ya tenías updateDoc; agrega deleteDoc si no estaba)
 import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  getDocs,
+  addDoc, collection, onSnapshot, query, orderBy, Timestamp, where, getDocs,
+  doc as fsDoc, updateDoc, serverTimestamp, deleteDoc,   // ← agrega deleteDoc
 } from "firebase/firestore";
-import type { Timestamp } from "firebase/firestore";
+
 
 import {
   renderCertToPdfBytes,

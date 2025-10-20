@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
-import { Pencil, Layers, FileText, UserPlus, HandCoins, Eye, Trash2, Check } from "lucide-react"
+import { Pencil, Layers, FileText, UserPlus, HandCoins } from "lucide-react"
 
 // Firebase
 import { db, storage } from "../servicios/firebaseConfig"
@@ -101,6 +101,10 @@ const neoInset = [
   "border border-white/60",
   "shadow-inner shadow-black/10",
 ].join(" ")
+
+/** Bordes reforzados solo para el modal */
+const modalSurface = `${neoSurface} border-gray-200 ring-1 ring-gray-200 bg-white`
+const modalInset = `${neoInset} border-gray-200 ring-1 ring-gray-200`
 
 const pill = [
   "relative",
@@ -270,7 +274,7 @@ function EditCursoModal({
           await updateDoc(docRef, { portadaUrl })
         }
 
-        onSaved({})
+        onSaved({}) // actualiza lista
         onClose()
         return
       }
@@ -386,10 +390,10 @@ function EditCursoModal({
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
         <div
-          className={`${neoSurface} w-full max-w-3xl overflow-hidden`}
+          className={`${modalSurface} w-full max-w-3xl overflow-hidden`}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold">Editar curso</h2>
             <button
               onClick={onClose}
@@ -409,7 +413,7 @@ function EditCursoModal({
                   <img
                     src={preview}
                     alt="portada"
-                    className="h-32 w-32 object-cover rounded-xl border border-white/60 shadow-soft"
+                    className="h-32 w-32 object-cover rounded-xl border border-gray-200 ring-1 ring-gray-200 shadow-soft"
                   />
                   <button
                     type="button"
@@ -449,7 +453,7 @@ function EditCursoModal({
                 <div key={i}>
                   <label className="text-sm text-gray-600">{f.label}</label>
                   <input
-                    className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                    className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                     value={f.val}
                     onChange={(e) => f.set(e.target.value)}
                     type={f.type}
@@ -459,7 +463,7 @@ function EditCursoModal({
               <div>
                 <label className="text-sm text-gray-600">Categoría *</label>
                 <select
-                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                   value={categoria}
                   onChange={(e) => setCategoria(e.target.value)}
                 >
@@ -473,7 +477,7 @@ function EditCursoModal({
                 <label className="text-sm text-gray-600">Fecha de Inicio *</label>
                 <input
                   type="date"
-                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                   value={fechaInicio}
                   onChange={(e) => setFechaInicio(e.target.value)}
                 />
@@ -482,7 +486,7 @@ function EditCursoModal({
                 <label className="text-sm text-gray-600">Fecha de Fin *</label>
                 <input
                   type="date"
-                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                   value={fechaFin}
                   onChange={(e) => setFechaFin(e.target.value)}
                 />
@@ -492,7 +496,7 @@ function EditCursoModal({
             <div>
               <label className="text-sm text-gray-600">Descripción</label>
               <textarea
-                className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                 rows={3}
                 value={descripcion}
                 onChange={(e) => setDescripcion(e.target.value)}
@@ -506,7 +510,7 @@ function EditCursoModal({
                 <button
                   type="button"
                   onClick={() => setTipoCurso("personal")}
-                  className={`text-left p-3 ${neoInset} ${tipoCurso === "personal" ? "ring-2 ring-tecnm-azul/30" : ""}`}
+                  className={`text-left p-3 ${modalInset} ${tipoCurso === "personal" ? "ring-2 ring-tecnm-azul/30" : ""}`}
                 >
                   <div className="font-medium">Por Personal</div>
                   <div className="text-sm text-gray-600">Gestión individual de participantes</div>
@@ -514,7 +518,7 @@ function EditCursoModal({
                 <button
                   type="button"
                   onClick={() => setTipoCurso("grupos")}
-                  className={`text-left p-3 ${neoInset} ${tipoCurso === "grupos" ? "ring-2 ring-tecnm-azul/30" : ""}`}
+                  className={`text-left p-3 ${modalInset} ${tipoCurso === "grupos" ? "ring-2 ring-tecnm-azul/30" : ""}`}
                 >
                   <div className="font-medium">Por Grupos</div>
                   <div className="text-sm text-gray-600">Gestión por grupos o lotes</div>
@@ -523,7 +527,7 @@ function EditCursoModal({
             </div>
 
             {tipoCurso === "grupos" && (
-              <div className={`${neoInset} p-3`}>
+              <div className={`${modalInset} p-3`}>
                 <p className="text-sm font-medium mb-2">Formulario de grupos</p>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -563,7 +567,7 @@ function EditCursoModal({
             )}
           </div>
 
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/60">
+          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-200">
             <Button
               variant="outline"
               className={`${pill} px-4 py-2`}
@@ -587,7 +591,7 @@ function EditCursoModal({
   )
 }
 
-/* ---------------- Modal EQUIPOS (con buscador, CRUD, pagado y añadir rápido) ---------------- */
+/* ---------------- Modal EQUIPOS (buscador, CRUD, pagado, añadir rápido) ---------------- */
 function ModalEquipos({
   open,
   onClose,
@@ -702,6 +706,7 @@ function ModalEquipos({
           p3: editEq.telefono || "",
           p4: editEq.escolaridad || "",
         },
+        pagado: !!editEq.pagado,
       }
       await updateDoc(fsDoc(db, "encuestas", editEq._encuestaId, "respuestas", editEq._respId), patch)
       setLista((prev) =>
@@ -743,10 +748,10 @@ function ModalEquipos({
           p4: aEscolaridad.trim() || "",
         },
       }
-      const ref = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
+      const refDoc = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
       const nuevo: Equipo = {
-        id: ref.id,
-        _respId: ref.id,
+        id: refDoc.id,
+        _respId: refDoc.id,
         _encuestaId: encuestaDestino,
         pagado: aPagado,
         nombreEquipo: payload.preset.nombreEquipo,
@@ -785,7 +790,13 @@ function ModalEquipos({
 
   return (
     <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -793,25 +804,32 @@ function ModalEquipos({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div className={`${neoSurface} w-full max-w-5xl overflow-hidden`} onClick={(e)=>e.stopPropagation()}>
-          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
+        <div
+          className={`${modalSurface} w-full max-w-5xl overflow-hidden`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
             <div className="min-w-0">
               <h2 className="text-lg font-semibold truncate">Equipos – {concurso?.nombre ?? "Concurso"}</h2>
-              <p className="text-xs text-gray-500 truncate">{concurso?.categoria ?? "Categoría"} · {concurso?.sede ?? "Sede"}</p>
+              <p className="text-xs text-gray-500 truncate">
+                {concurso?.categoria ?? "Categoría"} · {concurso?.sede ?? "Sede"}
+              </p>
             </div>
-            <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
+            <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">
+              ✕
+            </button>
           </div>
 
           <div className="p-5 space-y-3 max-h-[78vh] overflow-auto">
             {/* Barra superior: buscador + añadir rápido */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto`}>
+              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto ring-1 ring-gray-200`}>
                 <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
                   <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
                 </svg>
                 <input
                   value={busq}
-                  onChange={(e)=>setBusq(e.target.value)}
+                  onChange={(e) => setBusq(e.target.value)}
                   placeholder="Buscar equipo, líder, categoría, institución…"
                   className="w-full md:w-80 outline-none text-sm bg-transparent"
                 />
@@ -819,77 +837,83 @@ function ModalEquipos({
 
               <div className="flex-1" />
 
-              <Button variant="outline" className={`${pill} px-4 py-2`} onClick={() => setAddingOpen((v)=>!v)}>
+              <Button variant="outline" className={`${pill} px-4 py-2`} onClick={() => setAddingOpen((v) => !v)}>
                 {addingOpen ? "Cerrar añadir" : "Añadir rápido"}
               </Button>
             </div>
 
             {/* Añadir rápido */}
             {addingOpen && (
-              <Card className={`${neoInset} p-3`}>
+              <Card className={`${modalInset} p-3`}>
                 <div className="grid md:grid-cols-2 gap-2">
                   <div>
                     <label className="text-xs text-gray-600">Encuesta destino</label>
                     <select
                       className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                       value={encuestaDestino}
-                      onChange={(e)=>setEncuestaDestino(e.target.value)}
+                      onChange={(e) => setEncuestaDestino(e.target.value)}
                     >
                       {encuestas.length === 0 ? (
                         <option value="">(No hay encuestas para este curso)</option>
                       ) : (
-                        encuestas.map(e => <option key={e.id} value={e.id}>{e.titulo || e.id}</option>)
+                        encuestas.map((e) => (
+                          <option key={e.id} value={e.id}>
+                            {e.titulo || e.id}
+                          </option>
+                        ))
                       )}
                     </select>
                   </div>
                   <div className="flex items-center gap-2 mt-6">
                     <label className="text-xs text-gray-600 inline-flex items-center gap-2">
-                      <input type="checkbox" checked={aPagado} onChange={(e)=>setAPagado(e.target.checked)} />
+                      <input type="checkbox" checked={aPagado} onChange={(e) => setAPagado(e.target.checked)} />
                       Marcar como pagado
                     </label>
                   </div>
 
                   <div>
                     <label className="text-xs text-gray-600">Nombre del equipo *</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreEquipo} onChange={(e)=>setANombreEquipo(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreEquipo} onChange={(e) => setANombreEquipo(e.target.value)} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Nombre del líder</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreLider} onChange={(e)=>setANombreLider(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreLider} onChange={(e) => setANombreLider(e.target.value)} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Correo del equipo</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEmail} onChange={(e)=>setAEmail(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEmail} onChange={(e) => setAEmail(e.target.value)} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Categoría</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aCategoria} onChange={(e)=>setACategoria(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aCategoria} onChange={(e) => setACategoria(e.target.value)} />
                   </div>
                   <div className="md:col-span-2">
                     <label className="text-xs text-gray-600">Integrantes (separados por coma)</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aIntegrantes} onChange={(e)=>setAIntegrantes(e.target.value)} placeholder="Persona 1, Persona 2, Persona 3…" />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aIntegrantes} onChange={(e) => setAIntegrantes(e.target.value)} placeholder="Persona 1, Persona 2, Persona 3…" />
                   </div>
 
                   <div>
                     <label className="text-xs text-gray-600">Maestro asesor</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aAsesor} onChange={(e)=>setAAsesor(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aAsesor} onChange={(e) => setAAsesor(e.target.value)} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Institución</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aInstitucion} onChange={(e)=>setAInstitucion(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aInstitucion} onChange={(e) => setAInstitucion(e.target.value)} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Teléfono</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aTelefono} onChange={(e)=>setATelefono(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aTelefono} onChange={(e) => setATelefono(e.target.value)} />
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Escolaridad</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEscolaridad} onChange={(e)=>setAEscolaridad(e.target.value)} />
+                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEscolaridad} onChange={(e) => setAEscolaridad(e.target.value)} />
                   </div>
                 </div>
 
                 <div className="mt-3 flex justify-end gap-2">
-                  <Button variant="outline" onClick={()=>setAddingOpen(false)}>Cancelar</Button>
+                  <Button variant="outline" onClick={() => setAddingOpen(false)}>
+                    Cancelar
+                  </Button>
                   <Button onClick={añadirRapido} disabled={savingAdd || !aNombreEquipo.trim()}>
                     {savingAdd ? "Guardando…" : "Añadir"}
                   </Button>
@@ -898,62 +922,81 @@ function ModalEquipos({
             )}
 
             {/* Lista */}
-            {cargando && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
-            {error && !cargando && <Card className={`${neoInset} p-6 text-sm text-rose-600`}>{error}</Card>}
+            {cargando && <Card className={`${modalInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
+            {error && !cargando && <Card className={`${modalInset} p-6 text-sm text-rose-600`}>{error}</Card>}
             {!cargando && !error && filtrados.length === 0 && (
-              <Card className={`${neoInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>
+              <Card className={`${modalInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>
             )}
 
             {!cargando && !error && filtrados.length > 0 && (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtrados.map((eq) => (
-                  <Card key={`${eq._respId || eq.id}`} className={`p-4 border-0 ${neoSurface}`}>
-                    <div className="relative">
-                      {/* check pagado arriba-izquierda */}
-                      <label className="absolute -top-2 -left-2 bg-white rounded-full border shadow px-2 py-1 text-xs inline-flex items-center gap-1">
-                        <input
-                          type="checkbox"
-                          checked={!!eq.pagado}
-                          onChange={(e)=>togglePagado(eq, e.target.checked)}
-                        />
-                        Pagado {eq.pagado && <Check size={14} className="text-green-600" />}
-                      </label>
+                  <Card key={eq.id} className={`p-4 ${modalSurface} relative`}>
+                    {/* Chip/checkbox de Pagado - arriba a la derecha */}
+                    <label
+                      className="absolute top-2 right-2 z-10 inline-flex items-center gap-2 rounded-full
+                                 bg-white/95 backdrop-blur px-2.5 py-1 text-[11px] font-medium
+                                 border border-gray-200 ring-1 ring-gray-200 shadow-sm"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={!!eq.pagado}
+                        onChange={(e) => togglePagado(eq, e.target.checked)}
+                      />
+                      <span>Pagado</span>
+                    </label>
 
-                      <div className="flex items-start gap-3">
-                        <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
-                          {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
+                    {/* margen para no chocar con el chip */}
+                    <div className="flex items-start gap-3 mt-6">
+                      <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
+                        {eq.nombreEquipo?.slice(0, 2)?.toUpperCase() || "EQ"}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
+                          {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
-                            {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
-                          </div>
-                          <p className="text-xs text-gray-600">
-                            Líder: {eq.nombreLider || "—"}
-                            {eq.submittedAt && <> · {new Date(eq.submittedAt).toLocaleString()}</>}
-                          </p>
+                        <p className="text-xs text-gray-600">
+                          Líder: {eq.nombreLider || "—"}
+                          {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
+                        </p>
 
-                          <div className="mt-2">
-                            <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
-                            <ul className="text-sm list-disc ml-5 space-y-0.5">
-                              {eq.integrantes?.length ? eq.integrantes.map((n, i) => <li key={i}>{n}</li>) : <li>—</li>}
-                            </ul>
-                          </div>
+                        <div className="mt-2">
+                          <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
+                          <ul className="text-sm list-disc ml-5 space-y-0.5">
+                            {eq.integrantes?.length ? (
+                              eq.integrantes.map((n, i) => <li key={i}>{n}</li>)
+                            ) : (
+                              <li>—</li>
+                            )}
+                          </ul>
+                        </div>
 
-                          <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
-                            <Info label="Contacto" value={eq.contactoEquipo} />
-                            <Info label="Maestro asesor" value={eq.maestroAsesor} />
-                            <Info label="Institución" value={eq.institucion} />
-                            <Info label="Escolaridad" value={eq.escolaridad} />
-                            <Info label="Teléfono" value={eq.telefono} />
-                          </div>
+                        <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
+                          <Info label="Contacto" value={eq.contactoEquipo} />
+                          <Info label="Maestro asesor" value={eq.maestroAsesor} />
+                          <Info label="Institución" value={eq.institucion} />
+                          <Info label="Escolaridad" value={eq.escolaridad} />
+                          <Info label="Teléfono" value={eq.telefono} />
+                        </div>
 
-                          {/* acciones */}
-                          <div className="flex gap-2 mt-3">
-                            <IconBtn title="Ver" onClick={()=>setViewEq(eq)}><Eye size={18} /></IconBtn>
-                            <IconBtn title="Editar" onClick={()=>setEditEq(eq)}><Pencil size={18} /></IconBtn>
-                            <IconBtn title="Eliminar" onClick={()=>eliminarEquipo(eq)}><Trash2 size={18} /></IconBtn>
-                          </div>
+                        {/* Acciones */}
+                        <div className="flex items-center gap-2 mt-3">
+                          <Button variant="outline" size="sm" className="rounded-full" onClick={() => setViewEq(eq)}>
+                            Ver
+                          </Button>
+                          <Button variant="outline" size="sm" className="rounded-full" onClick={() => setEditEq(eq)}>
+                            Editar
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="rounded-full text-rose-600"
+                            onClick={() => eliminarEquipo(eq)}
+                          >
+                            Eliminar
+                          </Button>
                         </div>
                       </div>
                     </div>
@@ -968,12 +1011,14 @@ function ModalEquipos({
         <AnimatePresence>
           {viewEq && (
             <>
-              <motion.div className="fixed inset-0 bg-black/30" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onClick={()=>setViewEq(null)} />
-              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{opacity:0, y:8, scale:0.98}} animate={{opacity:1, y:0, scale:1}} exit={{opacity:0, y:8, scale:0.98}}>
+              <motion.div className="fixed inset-0 bg-black/30" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setViewEq(null)} />
+              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{ opacity: 0, y: 8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.98 }}>
                 <Card className="w-full max-w-lg p-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-base font-semibold">Detalle del equipo</h3>
-                    <Button variant="outline" size="sm" onClick={()=>setViewEq(null)}>Cerrar</Button>
+                    <Button variant="outline" size="sm" onClick={() => setViewEq(null)}>
+                      Cerrar
+                    </Button>
                   </div>
                   <div className="mt-3 grid gap-2 text-sm">
                     <Info label="Equipo" value={viewEq.nombreEquipo} />
@@ -997,57 +1042,69 @@ function ModalEquipos({
         <AnimatePresence>
           {editEq && (
             <>
-              <motion.div className="fixed inset-0 bg-black/30" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onClick={()=>setEditEq(null)} />
-              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{opacity:0, y:8, scale:0.98}} animate={{opacity:1, y:0, scale:1}} exit={{opacity:0, y:8, scale:0.98}}>
+              <motion.div className="fixed inset-0 bg-black/30" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setEditEq(null)} />
+              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{ opacity: 0, y: 8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.98 }}>
                 <Card className="w-full max-w-2xl p-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-base font-semibold">Editar equipo</h3>
-                    <Button variant="outline" size="sm" onClick={()=>setEditEq(null)}>Cerrar</Button>
+                    <Button variant="outline" size="sm" onClick={() => setEditEq(null)}>
+                      Cerrar
+                    </Button>
                   </div>
 
                   <div className="grid md:grid-cols-2 gap-2 mt-3">
                     <Field label="Nombre del equipo">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreEquipo || ""} onChange={(e)=>setEditEq({...editEq, nombreEquipo: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreEquipo || ""} onChange={(e) => setEditEq({ ...editEq, nombreEquipo: e.target.value })} />
                     </Field>
                     <Field label="Nombre del líder">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreLider || ""} onChange={(e)=>setEditEq({...editEq, nombreLider: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreLider || ""} onChange={(e) => setEditEq({ ...editEq, nombreLider: e.target.value })} />
                     </Field>
                     <Field label="Correo del equipo">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.contactoEquipo || ""} onChange={(e)=>setEditEq({...editEq, contactoEquipo: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.contactoEquipo || ""} onChange={(e) => setEditEq({ ...editEq, contactoEquipo: e.target.value })} />
                     </Field>
                     <Field label="Categoría">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.categoria || ""} onChange={(e)=>setEditEq({...editEq, categoria: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.categoria || ""} onChange={(e) => setEditEq({ ...editEq, categoria: e.target.value })} />
                     </Field>
                     <Field label="Integrantes (coma)">
                       <input
                         className="w-full rounded-xl border px-3 py-2 text-sm"
                         value={(editEq.integrantes || []).join(", ")}
-                        onChange={(e)=>setEditEq({...editEq, integrantes: e.target.value.split(",").map(s=>s.trim()).filter(Boolean)})}
+                        onChange={(e) =>
+                          setEditEq({
+                            ...editEq,
+                            integrantes: e.target.value
+                              .split(",")
+                              .map((s) => s.trim())
+                              .filter(Boolean),
+                          })
+                        }
                       />
                     </Field>
                     <div className="flex items-center gap-2">
                       <label className="text-sm text-gray-700 inline-flex items-center gap-2">
-                        <input type="checkbox" checked={!!editEq.pagado} onChange={(e)=>setEditEq({...editEq, pagado: e.target.checked})} />
+                        <input type="checkbox" checked={!!editEq.pagado} onChange={(e) => setEditEq({ ...editEq, pagado: e.target.checked })} />
                         Pagado
                       </label>
                     </div>
 
                     <Field label="Maestro asesor">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.maestroAsesor || ""} onChange={(e)=>setEditEq({...editEq, maestroAsesor: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.maestroAsesor || ""} onChange={(e) => setEditEq({ ...editEq, maestroAsesor: e.target.value })} />
                     </Field>
                     <Field label="Institución">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.institucion || ""} onChange={(e)=>setEditEq({...editEq, institucion: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.institucion || ""} onChange={(e) => setEditEq({ ...editEq, institucion: e.target.value })} />
                     </Field>
                     <Field label="Teléfono">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.telefono || ""} onChange={(e)=>setEditEq({...editEq, telefono: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.telefono || ""} onChange={(e) => setEditEq({ ...editEq, telefono: e.target.value })} />
                     </Field>
                     <Field label="Escolaridad">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.escolaridad || ""} onChange={(e)=>setEditEq({...editEq, escolaridad: e.target.value})} />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.escolaridad || ""} onChange={(e) => setEditEq({ ...editEq, escolaridad: e.target.value })} />
                     </Field>
                   </div>
 
                   <div className="mt-3 flex justify-end gap-2">
-                    <Button variant="outline" onClick={()=>setEditEq(null)}>Cancelar</Button>
+                    <Button variant="outline" onClick={() => setEditEq(null)}>
+                      Cancelar
+                    </Button>
                     <Button onClick={guardarEdicion} disabled={savingEdit}>
                       {savingEdit ? "Guardando…" : "Guardar cambios"}
                     </Button>
@@ -1071,9 +1128,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function Info({label, value}:{label:string; value?:string}) {
+function Info({ label, value }: { label: string; value?: string }) {
   return (
-    <div className={`${neoInset} p-2`}>
+    <div className={`${modalInset} p-2`}>
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
       <p className="truncate">{value || "—"}</p>
     </div>
@@ -1122,7 +1179,8 @@ function TarjetaConcurso({
                 <Chip tone={tone}>{c.estatus}</Chip>
               </div>
               <p className="text-xs text-gray-500 mt-0.5">
-                {c.fechaInicio ? new Date(c.fechaInicio).toLocaleDateString() : "—"} — {c.fechaFin ? new Date(c.fechaFin).toLocaleDateString() : "—"}
+                {c.fechaInicio ? new Date(c.fechaInicio).toLocaleDateString() : "—"} —{" "}
+                {c.fechaFin ? new Date(c.fechaFin).toLocaleDateString() : "—"}
               </p>
               {c.instructor && <p className="text-sm text-gray-700 mt-1 truncate">{c.instructor}</p>}
               {c.sede && <p className="text-xs text-gray-600 truncate">{c.sede}</p>}
@@ -1367,14 +1425,14 @@ export default function Concursos() {
           </div>
 
           <div className="flex items-center gap-2">
-            <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner`}>
+            <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner ring-1 ring-gray-200`}>
               <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
                 <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
               </svg>
-              <input value={busqueda} onChange={(e)=>setBusqueda(e.target.value)} placeholder="Buscar por nombre, sede o categoría…" className="w-56 md:w-72 outline-none text-sm bg-transparent" />
+              <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre, sede o categoría…" className="w-56 md:w-72 outline-none text-sm bg-transparent" />
             </div>
 
-            <select value={categoria} onChange={(e)=>setCategoria(e.target.value)} className={`${pill} bg-white px-3 py-2 text-sm`}>
+            <select value={categoria} onChange={(e) => setCategoria(e.target.value)} className={`${pill} bg-white px-3 py-2 text-sm`}>
               {(["Todas", ...Array.from(new Set(concursos.map((c) => c.categoria || "General")))]).map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
             </select>
 
@@ -1405,7 +1463,7 @@ export default function Concursos() {
                 c={c}
                 onOpenEquipos={abrirEquipos}
                 onEdit={abrirEditar}
-                onAddCoord={(cc)=>{ setCursoCoord(cc); setAddCoordOpen(true)}}
+                onAddCoord={(cc) => { setCursoCoord(cc); setAddCoordOpen(true) }}
               />
             ))}
           </div>
@@ -1427,7 +1485,7 @@ export default function Concursos() {
   )
 }
 
-/* ---------------- Modal AÑADIR COORDINADOR (igual que antes) ---------------- */
+/* ---------------- Modal AÑADIR COORDINADOR ---------------- */
 function AddCoordinadorModal({
   open,
   onClose,
@@ -1490,8 +1548,8 @@ function AddCoordinadorModal({
         transition={{ duration: 0.18 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        <div className={`${neoSurface} w-full max-w-md overflow-hidden`} onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
+        <div className={`${modalSurface} w-full max-w-md overflow-hidden`} onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold">Añadir Coordinador</h2>
             <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
           </div>
@@ -1510,13 +1568,13 @@ function AddCoordinadorModal({
                   value={f.value}
                   onChange={(e) => f.set(e.target.value)}
                   placeholder={f.ph}
-                  className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+                  className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                 />
               </div>
             ))}
           </div>
 
-          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-white/60">
+          <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-200">
             <Button variant="outline" className={`${pill} px-4 py-2`} onClick={onClose} disabled={saving}>Cancelar</Button>
             <Button
               variant="solid"

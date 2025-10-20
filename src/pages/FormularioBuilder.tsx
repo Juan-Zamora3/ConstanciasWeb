@@ -1,11 +1,12 @@
 // src/pages/FormularioBuilder.tsx
 import React, { useEffect, useMemo, useState } from "react"
-import { useParams, Link } from "react-router-dom"
+import { useParams, Link, useNavigate } from "react-router-dom"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 
 // API compat centralizada
-import { useSurveys, getById } from "../servicios/UseSurveys.ts"
+// (Asegúrate que el archivo se llama exactamente 'useSurveys.ts')
+import { useSurveys, getById } from "../servicios/UseSurveys"
 
 /* ========= Tipos ========= */
 type CampoPresetFlags = {
@@ -54,14 +55,47 @@ const nextId = (list: Pregunta[]) => {
   return `p${max + 1}`
 }
 
+/* ====== Estilos (mismos que Concursos) ====== */
+const neoSurface = [
+  "relative rounded-xl3",
+  "bg-gradient-to-br from-white to-gray-50",
+  "border border-white/60",
+  "shadow-[0_16px_40px_rgba(2,6,23,0.08),0_2px_4px_rgba(2,6,23,0.05)]",
+  "before:content-[''] before:absolute before:inset-0 before:rounded-xl3",
+  "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-10px_26px_rgba(2,6,23,0.06)]",
+  "before:pointer-events-none",
+].join(" ")
+
+const neoInset = [
+  "rounded-xl",
+  "bg-gradient-to-br from-white to-gray-50",
+  "border border-white/60",
+  "shadow-inner shadow-black/10",
+].join(" ")
+
+const pill = [
+  "relative",
+  "rounded-full",
+  "bg-white",
+  "border border-white/60",
+  "shadow-[0_8px_24px_rgba(2,6,23,0.06)]",
+  "before:content-[''] before:absolute before:inset-px before:rounded-full",
+  "before:pointer-events-none",
+  "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]",
+].join(" ")
+
 /* ========= Builder ========= */
 export default function FormularioBuilder() {
   const { encuestaId } = useParams<{ encuestaId: string }>()
+  const navigate = useNavigate()
   const { updateSurvey, updateSurveyTheme, loading } = useSurveys()
 
   const [initialLoaded, setInitialLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Link público
+  const [publicLink, setPublicLink] = useState("")
 
   // Estado
   const [presets, setPresets] = useState<CampoPresetFlags>({
@@ -88,6 +122,21 @@ export default function FormularioBuilder() {
   const [npTipo, setNpTipo] = useState<TipoPregunta>("texto")
   const [npReq, setNpReq] = useState(false)
   const [npOpciones, setNpOpciones] = useState<string[]>([""])
+
+  /* ----- Link por ID ----- */
+  useEffect(() => {
+    if (!encuestaId) return
+    const origin = typeof window !== "undefined" ? window.location.origin : ""
+    setPublicLink(`${origin}/formulario-publico/${encuestaId}`)
+  }, [encuestaId])
+
+  const copyLink = async () => {
+    if (!publicLink) return
+    try {
+      await navigator.clipboard.writeText(publicLink)
+      alert("Link copiado.")
+    } catch {}
+  }
 
   /* ----- Cargar encuesta ----- */
   useEffect(() => {
@@ -217,7 +266,8 @@ export default function FormularioBuilder() {
         }
       )
 
-      alert("Configuración guardada.")
+      // redirige a Concursos
+      navigate("/concursos")
     } catch (e) {
       console.error(e)
       alert("No se pudo guardar. Revisa la consola.")
@@ -320,37 +370,66 @@ export default function FormularioBuilder() {
 
   if (!initialLoaded) {
     return (
-      <div className="p-6">
-        <Card className="p-6">Cargando constructor…</Card>
-      </div>
+      <section className="p-6">
+        <Card className={`${neoInset} p-6`}>Cargando constructor…</Card>
+      </section>
     )
   }
   if (error) {
     return (
-      <div className="p-6">
-        <Card className="p-6 text-red-600">{error}</Card>
-      </div>
+      <section className="p-6">
+        <Card className={`${neoInset} p-6 text-rose-600`}>{error}</Card>
+      </section>
     )
   }
 
   return (
     <section className="space-y-5 p-4 md:p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Constructor de Formulario</h1>
-        <div className="flex gap-2">
-          {encuestaId && (
-            <Link to={`/formulario-publico/${encuestaId}`} target="_blank">
-              <Button variant="outline">Ver formulario público</Button>
-            </Link>
-          )}
-          <Button onClick={guardar} disabled={saving || loading}>
-            {saving ? "Guardando…" : "Guardar cambios"}
-          </Button>
+      {/* HERO (estilo Concursos/Constancias) */}
+      <div className="rounded-2xl bg-gradient-to-r from-[#143d6e] to-[#143563] text-white px-5 py-4 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight">Constructor de formulario</h1>
+            <p className="text-sm opacity-90">Configura los campos, apariencia y categorías del registro público.</p>
+          </div>
+
+          {/* Acciones + Link público */}
+          <div className="flex flex-col gap-2 md:items-end">
+            <div className="flex items-center gap-2 flex-wrap">
+              {encuestaId && (
+                <Link to={`/formulario-publico/${encuestaId}`} target="_blank" className="order-2 md:order-none">
+                  <Button variant="outline" className="rounded-full bg-white/5 hover:bg-white/10 border-white/60 text-white">
+                    Ver formulario público
+                  </Button>
+                </Link>
+              )}
+              <Button
+                className="rounded-full bg-white text-[#0b2b55] hover:bg-white/90"
+                onClick={guardar}
+                disabled={saving || loading}
+              >
+                {saving ? "Guardando…" : "Guardar y volver"}
+              </Button>
+            </div>
+
+            {/* Link público */}
+            <div className="flex items-center gap-2 w-full md:w-[520px]">
+              <input
+                readOnly
+                value={publicLink}
+                placeholder="El link público aparecerá aquí…"
+                className="flex-1 rounded-xl border border-white/40 bg-white/10 text-white/90 px-3 py-2 text-sm placeholder:text-white/60"
+              />
+              <Button variant="outline" className="rounded-full bg-white/5 hover:bg-white/10 border-white/60 text-white" onClick={copyLink} disabled={!publicLink}>
+                Copiar
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Apariencia */}
-      <Card className="p-4 space-y-4">
+      <Card className={`p-4 space-y-4 border-0 ${neoSurface}`}>
         <h2 className="text-lg font-semibold">Apariencia de la pantalla</h2>
 
         <div className="grid md:grid-cols-2 gap-3">
@@ -375,7 +454,7 @@ export default function FormularioBuilder() {
                 onChange={(e) => e.target.files?.[0] && onBgFile(e.target.files[0])}
               />
               {apariencia.bgImageUrl && (
-                <Button variant="outline" size="sm" onClick={quitarBg}>
+                <Button variant="outline" size="sm" onClick={quitarBg} className={`${pill} px-3`}>
                   Quitar
                 </Button>
               )}
@@ -426,7 +505,7 @@ export default function FormularioBuilder() {
         </div>
 
         {/* Preview simple */}
-        <div className="mt-3 rounded-xl border overflow-hidden">
+        <div className="mt-2 rounded-xl border overflow-hidden">
           <div className="p-6" style={headerStyle}>
             {apariencia.overlay && apariencia.bgImageUrl && (
               <div
@@ -451,63 +530,66 @@ export default function FormularioBuilder() {
       </Card>
 
       {/* Presets + Categorías */}
-      <Card className="p-4 space-y-4">
+      <Card className={`p-4 space-y-4 border-0 ${neoSurface}`}>
         <h2 className="text-lg font-semibold">Configuración base</h2>
 
         <div className="grid md:grid-cols-2 gap-3">
-          <div className="space-y-2">
+          <div className={`${neoInset} p-3`}>
             <p className="text-sm font-medium">Campos preestablecidos</p>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={!!presets.nombreEquipo}
-                onChange={(e) =>
-                  setPresets((p) => ({ ...p, nombreEquipo: e.target.checked }))
-                }
-              />
-              <span>Nombre del Equipo</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={!!presets.nombreLider}
-                onChange={(e) =>
-                  setPresets((p) => ({ ...p, nombreLider: e.target.checked }))
-                }
-              />
-              <span>Nombre del Líder del Equipo</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={!!presets.contactoEquipo}
-                onChange={(e) =>
-                  setPresets((p) => ({ ...p, contactoEquipo: e.target.checked }))
-                }
-              />
-              <span>Correo del Equipo</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={!!presets.categoria}
-                onChange={(e) =>
-                  setPresets((p) => ({ ...p, categoria: e.target.checked }))
-                }
-              />
-              <span>Categoría</span>
-            </label>
+            <div className="mt-2 space-y-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!presets.nombreEquipo}
+                  onChange={(e) =>
+                    setPresets((p) => ({ ...p, nombreEquipo: e.target.checked }))
+                  }
+                />
+                <span>Nombre del Equipo</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!presets.nombreLider}
+                  onChange={(e) =>
+                    setPresets((p) => ({ ...p, nombreLider: e.target.checked }))
+                  }
+                />
+                <span>Nombre del Líder del Equipo</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!presets.contactoEquipo}
+                  onChange={(e) =>
+                    setPresets((p) => ({ ...p, contactoEquipo: e.target.checked }))
+                  }
+                />
+                <span>Correo del Equipo</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!presets.categoria}
+                  onChange={(e) =>
+                    setPresets((p) => ({ ...p, categoria: e.target.checked }))
+                  }
+                />
+                <span>Categoría</span>
+              </label>
+            </div>
           </div>
 
-          <div className="space-y-2">
+          <div className={`${neoInset} p-3`}>
             <p className="text-sm font-medium">Cantidad de participantes</p>
-            <div className="flex items-center gap-2">
+            <div className="mt-2 flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() =>
                   setCantidadParticipantes((n) => clamp(n - 1, 1, 15))
                 }
+                className={`${pill} px-3`}
               >
                 –
               </Button>
@@ -527,19 +609,20 @@ export default function FormularioBuilder() {
                 onClick={() =>
                   setCantidadParticipantes((n) => clamp(n + 1, 1, 15))
                 }
+                className={`${pill} px-3`}
               >
                 +
               </Button>
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 mt-1">
               Se usará en el formulario público.
             </p>
           </div>
         </div>
 
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Agregar categorías</p>
-          <div className="grid md:grid-cols-2 gap-2">
+        <div className={`${neoInset} p-3`}>
+          <p className="text-sm font-medium">Categorías del concurso</p>
+          <div className="grid md:grid-cols-2 gap-2 mt-2">
             {categorias.map((c, i) => (
               <div key={i} className="flex items-center gap-2">
                 <input
@@ -547,20 +630,20 @@ export default function FormularioBuilder() {
                   onChange={(e) => setCat(i, e.target.value)}
                   className="flex-1 rounded-xl border px-3 py-2"
                 />
-                <Button variant="outline" size="sm" onClick={() => delCat(i)}>
+                <Button variant="outline" size="sm" onClick={() => delCat(i)} className={`${pill} px-3`}>
                   Eliminar
                 </Button>
               </div>
             ))}
           </div>
-          <div className="flex items-center gap-2 mt-2">
+          <div className="flex items-center gap-2 mt-3">
             <input
               value={nuevoCat}
               onChange={(e) => setNuevoCat(e.target.value)}
               placeholder="Nueva categoría"
               className="rounded-xl border px-3 py-2"
             />
-            <Button variant="outline" onClick={addCat}>
+            <Button variant="outline" onClick={addCat} className={`${pill} px-3`}>
               + Agregar opción
             </Button>
           </div>
@@ -568,14 +651,14 @@ export default function FormularioBuilder() {
       </Card>
 
       {/* Preguntas personalizadas */}
-      <Card className="p-4 space-y-4">
+      <Card className={`p-4 space-y-4 border-0 ${neoSurface}`}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Preguntas Personalizadas</h2>
           <span className="text-sm text-slate-600">{preguntas.length}/10</span>
         </div>
 
         {/* Nueva pregunta */}
-        <div className="grid md:grid-cols-12 gap-2 items-end">
+        <div className={`${neoInset} p-3 grid md:grid-cols-12 gap-2 items-end`}>
           <div className="md:col-span-5">
             <label className="text-xs text-slate-600">
               Título de la pregunta *
@@ -604,21 +687,21 @@ export default function FormularioBuilder() {
               <option value="checkbox">Lista de Verificación (Checkbox)</option>
             </select>
           </div>
-          <div className="md:col-span-2">
-            <label className="text-xs text-slate-600">Requerido</label>
-            <div className="h-[42px] flex items-center">
-              <input
-                type="checkbox"
-                checked={npReq}
-                onChange={(e) => setNpReq(e.target.checked)}
-              />
+            <div className="md:col-span-2">
+              <label className="text-xs text-slate-600">Requerido</label>
+              <div className="h-[42px] flex items-center">
+                <input
+                  type="checkbox"
+                  checked={npReq}
+                  onChange={(e) => setNpReq(e.target.checked)}
+                />
+              </div>
             </div>
-          </div>
-          <div className="md:col-span-2">
-            <Button onClick={addPregunta} disabled={!canAddMore || !npTitulo.trim()}>
-              Agregar
-            </Button>
-          </div>
+            <div className="md:col-span-2">
+              <Button onClick={addPregunta} disabled={!canAddMore || !npTitulo.trim()} className={`${pill} px-4`}>
+                Agregar
+              </Button>
+            </div>
 
           {(npTipo === "select" || npTipo === "radio" || npTipo === "checkbox") && (
             <div className="md:col-span-12">
@@ -642,6 +725,7 @@ export default function FormularioBuilder() {
                       onClick={() =>
                         setNpOpciones((prev) => prev.filter((_, j) => j !== i))
                       }
+                      className={`${pill} px-3`}
                     >
                       Quitar
                     </Button>
@@ -653,6 +737,7 @@ export default function FormularioBuilder() {
                   variant="outline"
                   size="sm"
                   onClick={() => setNpOpciones((prev) => [...prev, ""])}
+                  className={`${pill} px-3`}
                 >
                   + Agregar opción
                 </Button>
@@ -663,13 +748,13 @@ export default function FormularioBuilder() {
 
         {/* Listado editable */}
         {preguntas.length === 0 ? (
-          <Card className="p-6 text-sm text-slate-600">
+          <Card className={`${neoInset} p-6 text-sm text-slate-600`}>
             Aún no has agregado preguntas.
           </Card>
         ) : (
           <div className="space-y-3">
             {preguntas.map((q, idx) => (
-              <Card key={q.id} className="p-3">
+              <Card key={q.id} className={`p-3 border-0 ${neoSurface}`}>
                 <div className="flex items-start gap-3">
                   <div className="h-8 w-8 grid place-items-center rounded-lg bg-slate-100 text-slate-700 font-semibold">
                     {idx + 1}
@@ -711,20 +796,20 @@ export default function FormularioBuilder() {
                       </label>
 
                       <div className="ml-auto flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => upPregunta(q.id)}>
+                        <Button variant="outline" size="sm" onClick={() => upPregunta(q.id)} className={`${pill} px-3`}>
                           ↑
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => downPregunta(q.id)}>
+                        <Button variant="outline" size="sm" onClick={() => downPregunta(q.id)} className={`${pill} px-3`}>
                           ↓
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => delPregunta(q.id)}>
+                        <Button variant="outline" size="sm" onClick={() => delPregunta(q.id)} className={`${pill} px-3`}>
                           Eliminar
                         </Button>
                       </div>
                     </div>
 
                     {q.tipo !== "texto" && (
-                      <div className="space-y-2">
+                      <div className={`${neoInset} p-3 space-y-2`}>
                         <div className="text-xs text-slate-600">Opciones</div>
                         <div className="grid md:grid-cols-2 gap-2">
                           {(q.opciones || [""]).map((op, i) => (
@@ -749,6 +834,7 @@ export default function FormularioBuilder() {
                                     opciones: (q.opciones || []).filter((_, j) => j !== i),
                                   })
                                 }
+                                className={`${pill} px-3`}
                               >
                                 Quitar
                               </Button>
@@ -761,6 +847,7 @@ export default function FormularioBuilder() {
                           onClick={() =>
                             setPregunta(q.id, { opciones: [...(q.opciones || []), ""] })
                           }
+                          className={`${pill} px-3`}
                         >
                           + Agregar opción
                         </Button>
@@ -775,15 +862,22 @@ export default function FormularioBuilder() {
       </Card>
 
       {/* Footer acciones */}
-      <div className="flex items-center justify-end gap-2">
-        {encuestaId && (
-          <Link to={`/formulario-publico/${encuestaId}`} target="_blank">
-            <Button variant="outline">Ver formulario público</Button>
-          </Link>
-        )}
-        <Button onClick={guardar} disabled={saving || loading}>
-          {saving ? "Guardando…" : "Guardar cambios"}
-        </Button>
+      <div className="flex items-center justify-between">
+        <Link to="/concursos" className="text-sm text-tecnm-azul hover:underline">
+          Volver a Concursos
+        </Link>
+        <div className="flex gap-2">
+          {encuestaId && (
+            <Link to={`/formulario-publico/${encuestaId}`} target="_blank">
+              <Button variant="outline" className={`${pill} px-4`}>
+                Ver formulario público
+              </Button>
+            </Link>
+          )}
+          <Button onClick={guardar} disabled={saving || loading} className="rounded-full bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 text-white px-5">
+            {saving ? "Guardando…" : "Guardar y volver"}
+          </Button>
+        </div>
       </div>
     </section>
   )
