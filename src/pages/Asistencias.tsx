@@ -1,6 +1,6 @@
 // src/pages/Asistencias.tsx
 import { useEffect, useMemo, useState } from "react"
-import { useSearchParams, Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { db } from "../servicios/firebaseConfig"
@@ -78,7 +78,7 @@ const toISO = (v: unknown): string => {
 const normalize = (s: string) =>
   s
     .normalize("NFD")
-    // @ts-ignore Diacríticos
+    // @ts-ignore diacríticos
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
     .replace(/[^a-z\s.'-]/g, " ")
@@ -152,7 +152,6 @@ export default function Asistencias() {
 
   const [equipos, setEquipos] = useState<Equipo[]>([])
   const [ui, setUi] = useState<Record<string, EquipoUIState>>({})
-  const [fechaSesion, setFechaSesion] = useState(toISO(new Date()))
 
   // Operación
   const [requierePago, setRequierePago] = useState<boolean>(true)
@@ -163,7 +162,7 @@ export default function Asistencias() {
   const [buscarEquipo, setBuscarEquipo] = useState<string>("")
   const [cuotaGlobal, setCuotaGlobal] = useState<number>(100)
 
-  // 1) Cargar datos del curso
+  /* ----------- 1) Cargar datos del curso ----------- */
   useEffect(() => {
     const load = async () => {
       try {
@@ -203,7 +202,7 @@ export default function Asistencias() {
     load()
   }, [cursoId])
 
-  // 2) Cargar equipos desde encuestas/{id}/respuestas
+  /* ----------- 2) Cargar equipos desde encuestas ----------- */
   useEffect(() => {
     const loadTeams = async () => {
       if (!cursoId) return
@@ -277,16 +276,16 @@ export default function Asistencias() {
     loadTeams()
   }, [cursoId])
 
-  // 3) Tiempo real sobre asistencias (esta fecha)
+  /* ----------- 3) Tiempo real sobre asistencias (toda la subcolección) ----------- */
   useEffect(() => {
-    if (!cursoId || !fechaSesion) return
+    if (!cursoId) return
     const col = collection(db, "Cursos", cursoId, "asistencias")
-    const qy = query(col, where("fecha", "==", fechaSesion))
-    const unsub = onSnapshot(qy, (snap) => {
+    const unsub = onSnapshot(col, (snap) => {
       setUi((prev) => {
         const next = { ...prev }
         snap.forEach((doc) => {
           const d: any = doc.data() || {}
+          // Soporta docs nuevos (id=equipoId) y viejos (id=equipoId_fecha)
           const equipoId = String(d.equipoId || (doc.id || "").split("_")[0] || "")
           if (!equipoId) return
           const st = next[equipoId] || {}
@@ -297,15 +296,16 @@ export default function Asistencias() {
             montoEntregado: Number(d.pago?.montoEntregado ?? st.montoEntregado ?? 0),
             cambioEntregado: Number(d.pago?.cambioEntregado ?? st.cambioEntregado ?? 0),
             folio: d.pago?.folio ?? st.folio ?? "",
+            savedOk: true,
           }
         })
         return next
       })
     })
     return () => unsub()
-  }, [cursoId, fechaSesion])
+  }, [cursoId])
 
-  /* --------------- Filtros --------------- */
+  /* ----------- Filtros ----------- */
 
   const categorias = useMemo(() => {
     const set = new Set<string>()
@@ -323,7 +323,7 @@ export default function Asistencias() {
     })
   }, [equipos, filtroCategoria, buscarEquipo])
 
-  /* --------------- Dinero --------------- */
+  /* ----------- Dinero ----------- */
 
   const actualizarUI = (id: string, patch: Partial<EquipoUIState>) =>
     setUi((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
@@ -355,6 +355,7 @@ export default function Asistencias() {
   const netoEquipo = (id: string) => {
     const st = ui[id]
     if (!st) return 0
+    if (!requierePago) return 0
     return Math.max(0, Number(st.montoEntregado || 0) - Number(st.cambioEntregado || 0))
   }
 
@@ -373,22 +374,24 @@ export default function Asistencias() {
   }
 
   const resumen = useMemo(() => {
-    const totalNetoCobrado = equiposFiltrados.reduce((acc, eq) => acc + netoEquipo(eq.id), 0)
-    const cajaEstimada = cajaInicial + totalNetoCobrado
-    const totalEsperadoAll = equiposFiltrados.reduce((acc, eq) => acc + esperadoEquipo(eq.id), 0)
-    const totalCobradoAplicado = equiposFiltrados.reduce((acc, eq) => acc + cobradoEquipo(eq.id), 0)
-    const diferencia = totalEsperadoAll - totalCobradoAplicado
+    // Caja: suma de netos (recibido - cambio) de equipos filtrados
+    const sumaNeto = equiposFiltrados.reduce((acc, eq) => acc + netoEquipo(eq.id), 0)
+    const caja = sumaNeto
+
+    // Total estimado: (equipos filtrados × cuota global) + caja inicial
+    const estimacionEquipos = requierePago ? (equiposFiltrados.length * (Number(cuotaGlobal) || 0)) : 0
+    const totalEstimado = cajaInicial + estimacionEquipos
 
     return {
       equipos: equiposFiltrados.length,
-      cobradoDelDia: totalNetoCobrado,     // Recibido - Cambio (sin caja inicial)
-      cajaEstimada,                        // Caja inicial + cobrado del día
-      esperado: totalEsperadoAll,          // Útil para saber meta del día
-      pendiente: diferencia,               // Esperado - aplicado
+      cajaInicial,
+      caja,
+      totalEstimado,
+      cuotaGlobal,
     }
-  }, [equiposFiltrados, ui, requierePago, cajaInicial])
+  }, [equiposFiltrados, ui, requierePago, cajaInicial, cuotaGlobal])
 
-  /* --------------- Guardado --------------- */
+  /* ----------- Guardado ----------- */
 
   const guardarEquipo = async (eq: Equipo) => {
     try {
@@ -396,8 +399,7 @@ export default function Asistencias() {
       const st = ui[eq.id]
       if (!st) return
 
-      const fecha = fechaSesion || toISO(new Date())
-      const docId = `${eq.id}_${fecha}`
+      const docId = eq.id // ✅ un documento por equipo
       const ref = fsDoc(db, "Cursos", cursoId, "asistencias", docId)
 
       const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
@@ -412,7 +414,6 @@ export default function Asistencias() {
         cursoNombre: curso?.nombre || "",
         equipoId: eq.id,
         nombreEquipo: eq.nombreEquipo,
-        fecha,
         updatedAt: serverTimestamp(),
 
         asistencia: {
@@ -432,7 +433,7 @@ export default function Asistencias() {
           faltante,
           metodo: requierePago ? "Efectivo" : "—",
           folio: st.folio || null,
-          pagado,
+          pagado, // 👈 lo que lee el Cajero
           fechaPago: serverTimestamp(),
         },
 
@@ -458,7 +459,7 @@ export default function Asistencias() {
     alert("Asistencia/Pagos guardados para los equipos mostrados.")
   }
 
-  /* --------------- Exportar --------------- */
+  /* ----------- Exportar ----------- */
 
   const exportarExcel = async () => {
     const rows = equiposFiltrados.map((eq) => {
@@ -466,13 +467,10 @@ export default function Asistencias() {
       const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
       const esperado = esperadoEquipo(eq.id)
       const neto = netoEquipo(eq.id)
-      const cobrado = cobradoEquipo(eq.id)
       const faltante = faltanteEquipo(eq.id)
       const pagado = requierePago ? (faltante === 0 && esperado > 0) : true
 
       return {
-        Fecha: fechaSesion,
-        RequierePago: requierePago ? "Sí" : "No",
         Equipo: eq.nombreEquipo,
         Categoria: eq.categoria || "",
         "Líder": eq.nombreLider || "",
@@ -496,17 +494,15 @@ export default function Asistencias() {
       XLSX.utils.sheet_add_aoa(ws, [
         [],
         ["Resumen"],
-        ["Caja inicial (MXN)", cajaInicial],
-        ["Cobrado del día (MXN)", resumen.cobradoDelDia],
-        ["Caja estimada (MXN)", resumen.cajaEstimada],
+        ["Caja inicial (MXN)", resumen.cajaInicial],
+        ["Caja (MXN)", resumen.caja],
+        ["Total estimado (MXN)", resumen.totalEstimado],
         ["Equipos (filtrados)", resumen.equipos],
-        ["Esperado (MXN)", resumen.esperado],
-        ["Pendiente (MXN)", resumen.pendiente],
+        ["Cuota global (MXN)", resumen.cuotaGlobal],
       ], { origin: -1 })
 
-      const fechaSafe = (fechaSesion || toISO(new Date())).replaceAll("-", "")
       const nombreSafe = (curso?.nombre || "curso").replace(/[^\w\-]+/g, "_")
-      XLSX.writeFile(wb, `asistencias_${nombreSafe}_${fechaSafe}.xlsx`)
+      XLSX.writeFile(wb, `asistencias_${nombreSafe}.xlsx`)
     } catch {
       const headers = Object.keys(rows[0] || { "Sin filas": "" })
       const csv = [
@@ -518,21 +514,19 @@ export default function Asistencias() {
         }).join(",")),
         "",
         `"Resumen"`,
-        `"Caja inicial (MXN)","${cajaInicial}"`,
-        `"Cobrado del día (MXN)","${resumen.cobradoDelDia}"`,
-        `"Caja estimada (MXN)","${resumen.cajaEstimada}"`,
+        `"Caja inicial (MXN)","${resumen.cajaInicial}"`,
+        `"Caja (MXN)","${resumen.caja}"`,
+        `"Total estimado (MXN)","${resumen.totalEstimado}"`,
         `"Equipos (filtrados)","${resumen.equipos}"`,
-        `"Esperado (MXN)","${resumen.esperado}"`,
-        `"Pendiente (MXN)","${resumen.pendiente}"`,
+        `"Cuota global (MXN)","${resumen.cuotaGlobal}"`,
       ].join("\n")
 
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
-      const fechaSafe = (fechaSesion || toISO(new Date())).replaceAll("-", "")
       const nombreSafe = (curso?.nombre || "curso").replace(/[^\w\-]+/g, "_")
       a.href = url
-      a.download = `asistencias_${nombreSafe}_${fechaSafe}.csv`
+      a.download = `asistencias_${nombreSafe}.csv`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -540,7 +534,7 @@ export default function Asistencias() {
     }
   }
 
-  /* --------------- Render --------------- */
+  /* ----------- Render ----------- */
 
   if (cargando) return <Card className="p-8 text-sm text-gray-600">Cargando…</Card>
   if (error) return <Card className="p-8 text-sm text-red-600">{error}</Card>
@@ -557,13 +551,6 @@ export default function Asistencias() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            type="date"
-            className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
-            value={fechaSesion}
-            onChange={(e) => setFechaSesion(e.target.value)}
-            title="Fecha de la sesión"
-          />
           <Button variant="outline" onClick={() => navigate(-1)}>Volver</Button>
         </div>
       </div>
@@ -571,11 +558,11 @@ export default function Asistencias() {
       {/* Resumen + controles */}
       <Card className="p-4">
         <div className="flex flex-col gap-4">
-          {/* Resumen muy simple */}
+          {/* Resumen minimal */}
           <div className="grid gap-2 md:grid-cols-3">
-            <ResumePill label="Caja inicial" value={`$${cajaInicial.toFixed(2)}`} />
-            <ResumePill label="Cobrado (del día)" value={`$${resumen.cobradoDelDia.toFixed(2)}`} />
-            <ResumePill label="Caja estimada" value={`$${resumen.cajaEstimada.toFixed(2)}`} />
+            <ResumePill label="Caja inicial" value={`$${resumen.cajaInicial.toFixed(2)}`} />
+            <ResumePill label="Caja" value={`$${resumen.caja.toFixed(2)}`} />
+            <ResumePill label="Total estimado" value={`$${resumen.totalEstimado.toFixed(2)}`} />
           </div>
 
           {/* Controles: pago/caja + filtros + cuota global */}
@@ -795,7 +782,7 @@ export default function Asistencias() {
   )
 }
 
-/* ---------- Pequeño componente para el resumen ---------- */
+/* ---------- Componente de resumen ---------- */
 function ResumePill({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-gray-200 px-3 py-2 bg-gray-50">
