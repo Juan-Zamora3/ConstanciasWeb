@@ -1,10 +1,10 @@
 // src/pages/Concursos.tsx
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
-import { Pencil, Layers, FileText, UserPlus, HandCoins } from "lucide-react"
+import { Pencil, Layers, FileText, UserPlus, HandCoins, Eye, Trash2 } from "lucide-react"
 
 // Firebase
 import { db, storage } from "../servicios/firebaseConfig"
@@ -20,12 +20,10 @@ import {
   doc as fsDoc,
   updateDoc,
   serverTimestamp,
+  deleteDoc,
 } from "firebase/firestore"
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
-
-// 🔹 NEW: servicio de encuestas (usa los helpers que ya rescataste)
-import { useSurveys } from "../servicios/UseSurveys.ts"
 
 /* ---------------- Tipos ---------------- */
 export type EstadoConcurso = "Activo" | "Próximo" | "Finalizado"
@@ -48,6 +46,10 @@ export type Concurso = {
 
 type Equipo = {
   id: string
+  // NUEVO: para poder editar/eliminar/pagar correctamente
+  encuestaId: string
+  respuestaId: string
+
   nombreEquipo: string
   nombreLider?: string
   integrantes: string[]
@@ -58,6 +60,9 @@ type Equipo = {
   institucion?: string
   telefono?: string
   escolaridad?: string
+
+  // NUEVO: estado de pago persistente
+  pagoConfirmado?: boolean
 }
 
 /* ---------------- Utilidades ---------------- */
@@ -82,7 +87,7 @@ const safeEstado = (v: unknown): EstadoConcurso => {
   return "Activo"
 }
 
-/* ---------------- UI helpers (neumorphism + tu paleta) ---------------- */
+/* ---------------- UI helpers (neumorphism + paleta) ---------------- */
 const neoSurface = [
   "relative rounded-xl3",
   "bg-gradient-to-br from-white to-gray-50",
@@ -111,7 +116,7 @@ const pill = [
   "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]",
 ].join(" ")
 
-/* Pills de estado */
+/* Chips */
 function Chip({
   children,
   tone = "azul",
@@ -127,7 +132,7 @@ function Chip({
   return <span className={map[tone]}>{children}</span>
 }
 
-/* Barra de progreso */
+/* Barra progreso */
 function BarraProgreso({ actual, total }: { actual: number; total: number }) {
   const pct = Math.min(100, Math.round((actual / Math.max(1, total)) * 100))
   return (
@@ -205,23 +210,6 @@ function EditCursoModal({
   const [preview, setPreview] = useState<string | undefined>(undefined)
   const [jumping, setJumping] = useState(false)
 
-  // 🔹 NEW: survey service
-  const { getByCourse, createForCourse, setSurveySlug } = useSurveys()
-  const [encuestaId, setEncuestaId] = useState<string | null>(null)
-  const [publicLink, setPublicLink] = useState<string>("")
-  const [copiado, setCopiado] = useState(false)
-  const [linkLoading, setLinkLoading] = useState(false)
-
-  const slugify = (str = "") =>
-    String(str)
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80)
-
   useEffect(() => {
     if (!curso) return
     setNombre(curso.nombre || "")
@@ -235,38 +223,6 @@ function EditCursoModal({
     setPreview(curso.portadaUrl)
     setFile(null)
   }, [curso])
-
-  // 🔹 NEW: al abrir modal, intenta cargar encuesta existente y su link
-  useEffect(() => {
-    const load = async () => {
-      if (!open || !curso?.id) return
-      try {
-        const list = await getByCourse(curso.id)
-        if (list.length) {
-          const d: any = list[0]
-          setEncuestaId(d.id)
-          let link = d.linkBySlug || d.link || ""
-          if (!d.linkBySlug && d.id) {
-            const res = await setSurveySlug(
-              d.id,
-              slugify(`${curso.nombre || "registro"}-${curso.id}`)
-            )
-            link = res.linkBySlug
-          }
-          setPublicLink(link)
-        } else {
-          setEncuestaId(null)
-          setPublicLink("")
-        }
-      } catch (e) {
-        console.error(e)
-        setEncuestaId(null)
-        setPublicLink("")
-      }
-    }
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, curso?.id])
 
   if (!open || !curso) return null
 
@@ -343,88 +299,58 @@ function EditCursoModal({
     }
   }
 
-  // 🔹 NEW: generar/obtener link público con useSurveys
-  const generarLink = async () => {
-    if (!curso?.id) return
-    try {
-      setLinkLoading(true)
-      const existentes = await getByCourse(curso.id)
-      if (existentes.length) {
-        const d: any = existentes[0]
-        setEncuestaId(d.id)
-        if (d.linkBySlug) {
-          setPublicLink(d.linkBySlug)
-          return
-        }
-        const res = await setSurveySlug(
-          d.id,
-          slugify(`${curso.nombre || nombre || "registro"}-${curso.id}`)
-        )
-        setPublicLink(res.linkBySlug)
-        return
-      }
+  /** Busca/crea la encuesta ligada a este curso y retorna su ID */
+  const ensureEncuesta = async (cursoId: string): Promise<string> => {
+    const qy = query(collection(db, "encuestas"), where("cursoId", "==", cursoId))
+    const snap = await getDocs(qy)
+    if (!snap.empty) return snap.docs[0].id
 
-      // Crear nueva encuesta ligada al curso
-      const created = await createForCourse({
-        cursoId: curso.id,
-        titulo: `Registro de Grupos – ${nombre || curso.nombre || "Curso"}`,
-        descripcion: descripcion || "",
-        cantidadParticipantes: 4,
-        camposPreestablecidos: {
-          nombreEquipo: true,
-          nombreLider: true,
-          contactoEquipo: true,
-          categoria: true,
-          cantidadParticipantes: true,
-        },
-        categorias: [], // agrega si tu curso trae categorías
-      })
-      setEncuestaId(created.id)
-      setPublicLink(created.linkBySlug || created.link)
-    } finally {
-      setLinkLoading(false)
+    const baseDoc = {
+      cursoId,
+      creadoEn: Timestamp.now(),
+      creadoPor: null as string | null,
+      camposPreestablecidos: {
+        nombreEquipo: true,
+        nombreLider: true,
+        contactoEquipo: true,
+        categoria: true,
+        cantidadParticipantes: true,
+      },
+      cantidadParticipantes: 1,
+      categorias: [] as string[],
+      apariencia: {
+        fondoColor: "#f8fafc",
+        tituloColor: "#0f172a",
+        textoColor: "#0f172a",
+        overlay: 0.35,
+        fondoImagenUrl: "",
+        titulo: "Título de ejemplo",
+        subtitulo: "Texto de ejemplo del formulario",
+      },
+      preguntasPersonalizadas: [] as any[],
+      habilitado: true,
     }
+    const refDoc = await addDoc(collection(db, "encuestas"), baseDoc)
+    return refDoc.id
   }
 
-  const copiarLink = async () => {
-    if (!publicLink) return
-    try {
-      await navigator.clipboard.writeText(publicLink)
-      setCopiado(true)
-      setTimeout(() => setCopiado(false), 1500)
-    } catch {}
-  }
-
-  // 👉 Builder: asegura encuesta y navega
   const gotoBuilder = async () => {
     try {
       setJumping(true)
-      let id = encuestaId
-      if (!id) {
-        const existentes = await getByCourse(curso.id)
-        if (existentes.length) {
-          id = existentes[0].id
-        } else {
-          const created = await createForCourse({
-            cursoId: curso.id,
-            titulo: `Registro de Grupos – ${nombre || curso.nombre || "Curso"}`,
-            descripcion: descripcion || "",
-            cantidadParticipantes: 4,
-            camposPreestablecidos: {
-              nombreEquipo: true,
-              nombreLider: true,
-              contactoEquipo: true,
-              categoria: true,
-              cantidadParticipantes: true,
-            },
-            categorias: [],
-          })
-          id = created.id
-        }
-        setEncuestaId(id!)
-      }
+      const encuestaId = await ensureEncuesta(curso.id)
       onClose()
-      navigate(`/formulario-builder/${id}`)
+      navigate(`/formulario-builder/${encuestaId}`)
+    } finally {
+      setJumping(false)
+    }
+  }
+
+  const gotoPublic = async () => {
+    try {
+      setJumping(true)
+      const encuestaId = await ensureEncuesta(curso.id)
+      onClose()
+      navigate(`/formulario-publico/${encuestaId}`)
     } finally {
       setJumping(false)
     }
@@ -584,10 +510,8 @@ function EditCursoModal({
             </div>
 
             {tipoCurso === "grupos" && (
-              <div className={`${neoInset} p-3 space-y-3`}>
-                <p className="text-sm font-medium">Formulario de grupos</p>
-
-                {/* Botón para configurar el builder */}
+              <div className={`${neoInset} p-3`}>
+                <p className="text-sm font-medium mb-2">Formulario de grupos</p>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     variant="solid"
@@ -597,37 +521,16 @@ function EditCursoModal({
                   >
                     {jumping ? "Abriendo…" : "Configurar formulario"}
                   </Button>
+                  <Button
+                    variant="outline"
+                    className={`${pill} px-4 py-2 text-tecnm-azul`}
+                    onClick={gotoPublic}
+                    disabled={jumping}
+                  >
+                    {jumping ? "Abriendo…" : "Generar/abrir link público"}
+                  </Button>
                 </div>
-
-                {/* 🔹 NEW: Generar/mostrar link público */}
-                <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
-                  <input
-                    readOnly
-                    value={publicLink}
-                    placeholder="Aún no hay link. Genera uno."
-                    className="flex-1 border rounded-lg px-3 py-2 text-sm bg-white"
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      variant="solid"
-                      className="rounded-full px-4 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
-                      onClick={generarLink}
-                      disabled={linkLoading}
-                    >
-                      {publicLink ? "Regenerar/Obtener link" : "Generar link"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className={`${pill} px-4 py-2 text-tecnm-azul`}
-                      onClick={copiarLink}
-                      disabled={!publicLink}
-                    >
-                      {copiado ? "Copiado ✓" : "Copiar"}
-                    </Button>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-gray-500">
+                <p className="text-[11px] text-gray-500 mt-2">
                   Se creará automáticamente la encuesta del curso si aún no existe.
                 </p>
               </div>
@@ -738,8 +641,8 @@ function AddCoordinadorModal({
                 <label className="text-sm text-gray-600">{f.label}</label>
                 <input
                   type={f.type as any}
-                  value={f.value as any}
-                  onChange={(e) => f.set((e.target as HTMLInputElement).value)}
+                  value={f.value}
+                  onChange={(e) => f.set(e.target.value)}
                   placeholder={f.ph}
                   className={`${neoInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
                 />
@@ -764,63 +667,348 @@ function AddCoordinadorModal({
   )
 }
 
-/* ---------------- Modal EQUIPOS ---------------- */
+/* ---------------- Modal EQUIPOS (con buscador + acciones + pago) ---------------- */
 function ModalEquipos({
-  open, onClose, concurso, equipos, cargando, error,
-}: { open: boolean; onClose: () => void; concurso?: Concurso | null; equipos: Equipo[]; cargando: boolean; error: string | null }) {
+  open,
+  onClose,
+  concurso,
+  equipos,
+  cargando,
+  error,
+  onEquipoUpdated,
+  onEquipoDeleted,
+}: {
+  open: boolean
+  onClose: () => void
+  concurso?: Concurso | null
+  equipos: Equipo[]
+  cargando: boolean
+  error: string | null
+  onEquipoUpdated: (eq: Equipo) => void
+  onEquipoDeleted: (id: string) => void
+}) {
+  const [busq, setBusq] = useState("")
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [editId, setEditId] = useState<string | null>(null)
+  const [draft, setDraft] = useState<Partial<Equipo>>({})
+  const [savingPagoId, setSavingPagoId] = useState<string | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setBusq("")
+      setExpanded({})
+      setEditId(null)
+      setDraft({})
+    }
+  }, [open])
+
+  const filtered = useMemo(() => {
+    const q = busq.trim().toLowerCase()
+    if (!q) return equipos
+    return equipos.filter((e) => {
+      const a = e.nombreEquipo?.toLowerCase() || ""
+      const b = e.nombreLider?.toLowerCase() || ""
+      const c = e.categoria?.toLowerCase() || ""
+      return a.includes(q) || b.includes(q) || c.includes(q)
+    })
+  }, [busq, equipos])
+
+  const togglePago = async (e: Equipo, checked: boolean) => {
+    try {
+      setSavingPagoId(e.id)
+      await updateDoc(
+        fsDoc(db, "encuestas", e.encuestaId, "respuestas", e.respuestaId),
+        { pagoConfirmado: checked, updatedAt: serverTimestamp() } as any
+      )
+      onEquipoUpdated({ ...e, pagoConfirmado: checked })
+    } catch (err) {
+      console.error(err)
+      alert("No se pudo actualizar el estado de pago.")
+    } finally {
+      setSavingPagoId(null)
+    }
+  }
+
+  const beginEdit = (e: Equipo) => {
+    setEditId(e.id)
+    setDraft({
+      ...e,
+      integrantes: e.integrantes ? [...e.integrantes] : [],
+    })
+  }
+
+  const cancelEdit = () => {
+    setEditId(null)
+    setDraft({})
+  }
+
+  const saveEdit = async () => {
+    if (!editId) return
+    const e = equipos.find((x) => x.id === editId)
+    if (!e) return
+    try {
+      setSavingEdit(true)
+      const nombreEquipo = (draft.nombreEquipo ?? e.nombreEquipo ?? "").trim()
+      const nombreLider = (draft.nombreLider ?? e.nombreLider ?? "").trim()
+      const contactoEquipo = (draft.contactoEquipo ?? e.contactoEquipo ?? "").trim()
+      const categoria = (draft.categoria ?? e.categoria ?? "").trim()
+      const integrantes: string[] = (draft.integrantes ?? e.integrantes ?? [])
+        .map((s) => String(s || "").trim())
+        .filter(Boolean)
+
+      const ref = fsDoc(db, "encuestas", e.encuestaId, "respuestas", e.respuestaId)
+      await updateDoc(ref, {
+        // Para compat: espejo top-level
+        nombreEquipo,
+        nombreLider,
+        contactoEquipo,
+        categoria,
+        integrantes,
+        // Y dentro de `preset` (donde suele vivir la info)
+        "preset.nombreEquipo": nombreEquipo,
+        "preset.nombreLider": nombreLider,
+        "preset.contactoEquipo": contactoEquipo,
+        "preset.categoria": categoria,
+        "preset.integrantes": integrantes,
+        updatedAt: serverTimestamp(),
+      } as any)
+
+      onEquipoUpdated({
+        ...e,
+        nombreEquipo,
+        nombreLider,
+        contactoEquipo,
+        categoria,
+        integrantes,
+      })
+      cancelEdit()
+    } catch (err) {
+      console.error(err)
+      alert("No se pudo guardar la edición.")
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  const deleteEquipo = async (e: Equipo) => {
+    if (!confirm(`¿Eliminar el equipo "${e.nombreEquipo}"? Esta acción no se puede deshacer.`)) return
+    try {
+      await deleteDoc(fsDoc(db, "encuestas", e.encuestaId, "respuestas", e.respuestaId))
+      onEquipoDeleted(e.id)
+    } catch (err) {
+      console.error(err)
+      alert("No se pudo eliminar el equipo.")
+    }
+  }
+
   if (!open) return null
+
   return (
     <AnimatePresence>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
       <motion.div initial={{ opacity: 0, y: 20, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.98 }} transition={{ duration: 0.18 }} className="fixed inset-0 z-50 grid place-items-center p-4">
-        <div className={`${neoSurface} w-full max-w-4xl overflow-hidden`} onClick={(e)=>e.stopPropagation()}>
+        <div className={`${neoSurface} w-full max-w-5xl overflow-hidden`} onClick={(e)=>e.stopPropagation()}>
           <div className="flex items-center justify-between px-5 py-4 border-b border-white/60">
-            <div>
-              <h2 className="text-lg font-semibold">Equipos – {concurso?.nombre ?? "Concurso"}</h2>
-              <p className="text-xs text-gray-500">{concurso?.categoria ?? "Categoría"} · {concurso?.sede ?? "Sede"}</p>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold truncate">Equipos – {concurso?.nombre ?? "Concurso"}</h2>
+              <p className="text-xs text-gray-500 truncate">{concurso?.categoria ?? "Categoría"} · {concurso?.sede ?? "Sede"}</p>
             </div>
             <button className={`${pill} h-9 px-3 text-sm`} onClick={onClose} aria-label="Cerrar">✕</button>
           </div>
 
           <div className="p-5 max-h-[70vh] overflow-auto">
+            {/* Buscador dentro del modal */}
+            <div className="mb-3 flex items-center gap-2">
+              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full`}>
+                <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
+                  <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
+                </svg>
+                <input
+                  value={busq}
+                  onChange={(e)=>setBusq(e.target.value)}
+                  placeholder="Buscar por equipo, líder o categoría…"
+                  className="w-full outline-none text-sm bg-transparent"
+                />
+              </div>
+              {busq && <Button variant="outline" className={`${pill} px-3`} onClick={()=>setBusq("")}>Limpiar</Button>}
+            </div>
+
             {cargando && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
             {error && !cargando && <Card className={`${neoInset} p-6 text-sm text-rose-600`}>{error}</Card>}
-            {!cargando && !error && equipos.length === 0 && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>}
+            {!cargando && !error && filtered.length === 0 && <Card className={`${neoInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas.</Card>}
 
-            {!cargando && !error && equipos.length > 0 && (
+            {!cargando && !error && filtered.length > 0 && (
               <div className="grid gap-3 sm:grid-cols-2">
-                {equipos.map((eq) => (
-                  <Card key={eq.id} className={`p-4 border-0 ${neoSurface}`}>
-                    <div className="flex items-start gap-3">
-                      <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
-                        {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
+                {filtered.map((eq) => {
+                  const isEdit = editId === eq.id
+                  const show = expanded[eq.id] ?? true
+
+                  return (
+                    <Card key={eq.id} className={`relative p-4 border-0 ${neoSurface}`}>
+                      {/* Check de pago */}
+                      <label className="absolute top-3 left-3 inline-flex items-center gap-2 select-none">
+                        <input
+                          type="checkbox"
+                          className="h-5 w-5 accent-emerald-600"
+                          checked={!!eq.pagoConfirmado}
+                          onChange={(ev) => togglePago(eq, ev.target.checked)}
+                          disabled={savingPagoId === eq.id}
+                          title="Confirmar pago"
+                        />
+                        <span className="text-xs text-gray-700">Pago</span>
+                      </label>
+
+                      {/* Acciones */}
+                      <div className="absolute top-2 right-2 flex items-center gap-1">
+                        <IconBtn title={show ? "Ocultar" : "Ver"} onClick={() => setExpanded((m) => ({ ...m, [eq.id]: !show }))}>
+                          <Eye size={18} />
+                        </IconBtn>
+                        {isEdit ? (
+                          <>
+                            <Button
+                              size="sm"
+                              className="rounded-full px-3 py-1 bg-emerald-600 text-white"
+                              onClick={saveEdit}
+                              disabled={savingEdit}
+                            >
+                              Guardar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className={`${pill} px-3 py-1`}
+                              onClick={cancelEdit}
+                              disabled={savingEdit}
+                            >
+                              Cancelar
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <IconBtn title="Editar" onClick={() => beginEdit(eq)}>
+                              <Pencil size={18} />
+                            </IconBtn>
+                            <IconBtn title="Eliminar" onClick={() => deleteEquipo(eq)}>
+                              <Trash2 size={18} />
+                            </IconBtn>
+                          </>
+                        )}
                       </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
-                          {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
+
+                      {/* Cabecera */}
+                      <div className="flex items-start gap-3 mt-4">
+                        <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
+                          {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
                         </div>
-                        <p className="text-xs text-gray-600">
-                          Líder: {eq.nombreLider || "—"}
-                          {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
-                        </p>
-                        <div className="mt-2">
-                          <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
-                          <ul className="text-sm list-disc ml-5 space-y-0.5">
-                            {eq.integrantes?.length ? eq.integrantes.map((n, i) => <li key={i}>{n}</li>) : <li>—</li>}
-                          </ul>
-                        </div>
-                        <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
-                          <Info label="Contacto" value={eq.contactoEquipo} />
-                          <Info label="Maestro asesor" value={eq.maestroAsesor} />
-                          <Info label="Institución" value={eq.institucion} />
-                          <Info label="Escolaridad" value={eq.escolaridad} />
-                          <Info label="Teléfono" value={eq.telefono} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            {isEdit ? (
+                              <input
+                                className="w-full rounded-xl border px-3 py-2"
+                                value={draft.nombreEquipo as string ?? ""}
+                                onChange={(e) => setDraft((d) => ({ ...d, nombreEquipo: e.target.value }))}
+                              />
+                            ) : (
+                              <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
+                            )}
+                            {eq.categoria && !isEdit && <Chip tone="gris">{eq.categoria}</Chip>}
+                            {eq.pagoConfirmado && <span className="inline-flex items-center px-2 py-0.5 text-[11px] rounded-full bg-emerald-100 text-emerald-700">✓ Pagado</span>}
+                          </div>
+                          <p className="text-xs text-gray-600 mt-0.5">
+                            Líder:{" "}
+                            {isEdit ? (
+                              <input
+                                className="rounded-xl border px-2 py-1 text-xs"
+                                value={draft.nombreLider as string ?? ""}
+                                onChange={(e) => setDraft((d) => ({ ...d, nombreLider: e.target.value }))}
+                              />
+                            ) : (
+                              eq.nombreLider || "—"
+                            )}
+                            {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
+                          </p>
                         </div>
                       </div>
-                    </div>
-                  </Card>
-                ))}
+
+                      {/* Detalles */}
+                      {show && (
+                        <div className="mt-3">
+                          {/* Integrantes */}
+                          <div>
+                            <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
+                            {isEdit ? (
+                              <textarea
+                                className="w-full rounded-xl border px-3 py-2 text-sm"
+                                rows={4}
+                                placeholder="Un integrante por línea"
+                                value={(draft.integrantes as string[] | undefined)?.join("\n") ?? eq.integrantes.join("\n")}
+                                onChange={(e) =>
+                                  setDraft((d) => ({
+                                    ...d,
+                                    integrantes: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
+                                  }))
+                                }
+                              />
+                            ) : (
+                              <ul className="text-sm list-disc ml-5 space-y-0.5">
+                                {eq.integrantes?.length ? eq.integrantes.map((n, i) => <li key={i}>{n}</li>) : <li>—</li>}
+                              </ul>
+                            )}
+                          </div>
+
+                          {/* Campos extra */}
+                          <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
+                            <Info
+                              label="Contacto"
+                              value={
+                                isEdit ? undefined : (eq.contactoEquipo || "—")
+                              }
+                              editNode={
+                                isEdit ? (
+                                  <input
+                                    className="w-full rounded-xl border px-3 py-2 text-sm"
+                                    value={draft.contactoEquipo as string ?? ""}
+                                    onChange={(e) => setDraft((d) => ({ ...d, contactoEquipo: e.target.value }))}
+                                  />
+                                ) : undefined
+                              }
+                            />
+                            <Info
+                              label="Maestro asesor"
+                              value={eq.maestroAsesor}
+                            />
+                            <Info
+                              label="Institución"
+                              value={eq.institucion}
+                            />
+                            <Info
+                              label="Escolaridad"
+                              value={eq.escolaridad}
+                            />
+                            <Info
+                              label="Teléfono"
+                              value={eq.telefono}
+                            />
+                            <Info
+                              label="Categoría"
+                              value={isEdit ? undefined : (eq.categoria || "—")}
+                              editNode={
+                                isEdit ? (
+                                  <input
+                                    className="w-full rounded-xl border px-3 py-2 text-sm"
+                                    value={draft.categoria as string ?? ""}
+                                    onChange={(e) => setDraft((d) => ({ ...d, categoria: e.target.value }))}
+                                  />
+                                ) : undefined
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </Card>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -829,11 +1017,12 @@ function ModalEquipos({
     </AnimatePresence>
   )
 }
-function Info({label, value}:{label:string; value?:string}) {
+
+function Info({label, value, editNode}:{label:string; value?:string; editNode?:React.ReactNode}) {
   return (
     <div className={`${neoInset} p-2`}>
       <p className="text-[11px] uppercase tracking-wide text-gray-500">{label}</p>
-      <p className="truncate">{value || "—"}</p>
+      {editNode ? editNode : <p className="truncate">{value || "—"}</p>}
     </div>
   )
 }
@@ -887,7 +1076,7 @@ function TarjetaConcurso({
             </div>
           </div>
 
-          {/* Acciones */}
+          {/* Acciones con iconitos */}
           <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
             <IconBtn title="Editar" variant="primary" onClick={() => onEdit(c)}>
               <Pencil size={18} />
@@ -1058,8 +1247,12 @@ export default function Concursos() {
               : ((data as any).submittedAt ? new Date(String((data as any).submittedAt)).toISOString() : undefined)
 
           equiposAcumulados.push({
-            id: r.id, nombreEquipo, nombreLider, integrantes, contactoEquipo, categoria, submittedAt,
+            id: r.id,
+            encuestaId: encDoc.id,
+            respuestaId: r.id,
+            nombreEquipo, nombreLider, integrantes, contactoEquipo, categoria, submittedAt,
             maestroAsesor: custom.p1, institucion: custom.p2, telefono: custom.p3, escolaridad: custom.p4,
+            pagoConfirmado: !!(data as any).pagoConfirmado,
           })
         })
       }
@@ -1095,9 +1288,8 @@ export default function Concursos() {
         </div>
       </div>
 
-      {/* Barra de acciones */}
+      {/* Barra de filtros */}
       <Card className={`p-4 border-0 ${neoSurface} overflow-visible`}>
-
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2 overflow-x-auto overflow-y-visible py-1 -mx-1 px-1">
             {["Todos", "Activo", "Próximo", "Finalizado"].map((t) => (
@@ -1167,7 +1359,16 @@ export default function Concursos() {
       )}
 
       {/* Modales */}
-      <ModalEquipos open={modalOpen} onClose={() => setModalOpen(false)} concurso={concursoSel} equipos={equipos} cargando={equiposLoading} error={equiposError} />
+      <ModalEquipos
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        concurso={concursoSel}
+        equipos={equipos}
+        cargando={equiposLoading}
+        error={equiposError}
+        onEquipoUpdated={(eq) => setEquipos((prev) => prev.map((x) => (x.id === eq.id ? eq : x)))}
+        onEquipoDeleted={(id) => setEquipos((prev) => prev.filter((x) => x.id !== id))}
+      />
       <EditCursoModal open={editOpen} onClose={() => setEditOpen(false)} curso={editCurso} onSaved={onSavedPatch} />
       <AddCoordinadorModal open={addCoordOpen} onClose={() => setAddCoordOpen(false)} curso={cursoCoord} />
     </section>
