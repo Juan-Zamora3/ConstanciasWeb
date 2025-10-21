@@ -86,25 +86,25 @@ const safeEstado = (v: unknown): EstadoConcurso => {
 
 /* ---------------- UI helpers ---------------- */
 const neoSurface = [
-  "relative rounded-xl3",
-  "bg-gradient-to-br from-white to-gray-50",
-  "border border-white/60",
-  "shadow-[0_16px_40px_rgba(2,6,23,0.08),0_2px_4px_rgba(2,6,23,0.05)]",
-  "before:content-[''] before:absolute before:inset-0 before:rounded-xl3",
-  "before:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-10px_26px_rgba(2,6,23,0.06)]",
-  "before:pointer-events-none",
+  "relative rounded-2xl",
+  "bg-white",
+  "ring-1 ring-slate-200",
+  "shadow-[0_6px_16px_rgba(2,6,23,0.06),0_1px_2px_rgba(2,6,23,0.04)]",
+  "transition-transform duration-200 will-change-transform",
+  "hover:shadow-[0_16px_40px_rgba(2,6,23,0.12),0_2px_6px_rgba(2,6,23,0.08)]",
+  "hover:ring-tecnm-azul/30 hover:-translate-y-0.5",
 ].join(" ")
 
 const neoInset = [
   "rounded-xl",
   "bg-gradient-to-br from-white to-gray-50",
-  "border border-white/60",
+  "ring-1 ring-gray-200",
   "shadow-inner shadow-black/10",
 ].join(" ")
 
 /** Bordes reforzados solo para el modal */
-const modalSurface = `${neoSurface} border-gray-200 ring-1 ring-gray-200 bg-white`
-const modalInset = `${neoInset} border-gray-200 ring-1 ring-gray-200`
+const modalSurface = `${neoSurface} ring-slate-200`
+const modalInset   = `${neoInset}`
 
 const pill = [
   "relative",
@@ -163,8 +163,8 @@ function IconBtn({
   variant?: "primary" | "outline"
   children: React.ReactNode
 }) {
-  const base =
-    "h-9 w-9 grid place-items-center rounded-full transition active:scale-95 focus:outline-none"
+  const base = "h-9 w-9 grid place-items-center rounded-full transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-tecnm-azul/30"
+
   const styles =
     variant === "primary"
       ? "text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
@@ -444,7 +444,7 @@ function EditCursoModal({
             </div>
 
             {/* Básicos */}
-            <div className="grid md:grid-cols-2 gap-3">
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {[
                 { label: "Título del Curso *", val: nombre, set: setNombre, type: "text" },
                 { label: "Instructor *", val: instructor, set: setInstructor, type: "text" },
@@ -1182,70 +1182,113 @@ function TarjetaConcurso({
   onAddCoord: (c: Concurso) => void
 }) {
   const navigate = useNavigate()
-  const tone: "azul" | "gris" | "verde" = c.estatus === "Activo" ? "azul" : c.estatus === "Próximo" ? "gris" : "verde"
+  const tone: "azul" | "gris" | "verde" =
+    c.estatus === "Activo" ? "azul" : c.estatus === "Próximo" ? "gris" : "verde"
+
+  // gradiente/acento según estatus
+  const accent =
+    tone === "azul"
+      ? "from-tecnm-azul to-tecnm-azul-700"
+      : tone === "verde"
+      ? "from-emerald-500 to-emerald-700"
+      : "from-slate-400 to-slate-600"
 
   return (
-    <motion.div layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25 }}
+    >
       <Card
-        className={`p-0 overflow-hidden cursor-pointer border-0 ${neoSurface} transition`}
+        className={`group relative p-0 overflow-hidden cursor-pointer border-0 ${neoSurface} transform-gpu`}
         onClick={() => onOpenEquipos(c)}
       >
+        {/* acento lateral */}
+        <div className={`absolute inset-y-0 left-0 w-1.5 bg-gradient-to-b ${accent}`} />
+
         {/* Portada */}
         {c.portadaUrl ? (
-          <div className="h-40 w-full bg-gray-100">
+          <div className="h-40 w-full relative bg-slate-100">
             <img src={c.portadaUrl} alt="portada" className="h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent" />
           </div>
         ) : (
-          <div className="h-2 w-full bg-gradient-to-r from-gray-50 to-white" />
+          <div className={`h-2 w-full bg-gradient-to-r from-gray-50 to-white`} />
         )}
 
         {/* Contenido */}
         <div className="p-4 space-y-3">
           <div className="flex items-start gap-3">
-            <div className="h-12 w-12 rounded-xl bg-tecnm-azul/10 grid place-items-center text-tecnm-azul font-bold shrink-0">
+            <div className="h-12 w-12 rounded-xl grid place-items-center font-bold shrink-0
+                            text-tecnm-azul bg-tecnm-azul/10 ring-1 ring-slate-200">
               {c.categoria?.slice(0, 2)?.toUpperCase() || "CO"}
             </div>
+
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-[15px] leading-tight truncate">{c.nombre || "Concurso"}</h3>
+                <h3 className="font-semibold text-[15px] leading-tight truncate">
+                  {c.nombre || "Concurso"}
+                </h3>
                 <Chip tone={tone}>{c.estatus}</Chip>
               </div>
+
               <p className="text-xs text-gray-500 mt-0.5">
                 {c.fechaInicio ? new Date(c.fechaInicio).toLocaleDateString() : "—"} —{" "}
                 {c.fechaFin ? new Date(c.fechaFin).toLocaleDateString() : "—"}
               </p>
-              {c.instructor && <p className="text-sm text-gray-700 mt-1 truncate">{c.instructor}</p>}
+
+              {c.instructor && (
+                <p className="text-sm text-gray-700 mt-1 truncate">{c.instructor}</p>
+              )}
               {c.sede && <p className="text-xs text-gray-600 truncate">{c.sede}</p>}
             </div>
           </div>
 
-          {/* Acciones con iconitos */}
-          <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+          {/* Acciones */}
+          <div
+            className="flex flex-wrap gap-2"
+            onClick={(e) => e.stopPropagation()}
+          >
             <IconBtn title="Editar" variant="primary" onClick={() => onEdit(c)}>
               <Pencil size={18} />
             </IconBtn>
-            <IconBtn title="Plantillas" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
+            <IconBtn
+              title="Plantillas"
+              onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}
+            >
               <Layers size={18} />
             </IconBtn>
-            <IconBtn title="Constancias" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
+            <IconBtn
+              title="Constancias"
+              onClick={() => navigate(`/constancias?concursoId=${c.id}`)}
+            >
               <FileText size={18} />
             </IconBtn>
             <IconBtn title="Añadir coordinador" onClick={() => onAddCoord(c)}>
               <UserPlus size={18} />
             </IconBtn>
-            <IconBtn title="Asistencia & Pago" variant="primary" onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}>
+            <IconBtn
+              title="Asistencia & Pago"
+              variant="primary"
+              onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}
+            >
               <HandCoins size={18} />
             </IconBtn>
           </div>
 
           <div className="pt-1">
-            <BarraProgreso actual={c.participantesActual} total={c.participantesMax} />
+            <BarraProgreso
+              actual={c.participantesActual}
+              total={c.participantesMax}
+            />
           </div>
         </div>
       </Card>
     </motion.div>
   )
 }
+
 
 /* ------------------------------ Página ------------------------------ */
 export default function Concursos() {
@@ -1433,26 +1476,26 @@ export default function Concursos() {
       </div>
 
       {/* Barra de acciones */}
-      <Card className={`p-4 border-0 ${neoSurface} overflow-visible`}>
+      <Card
+  className={`p-4 border-0 ${neoSurface} overflow-visible
+              sticky top-2 z-30 bg-white/90 backdrop-blur
+              supports-[backdrop-filter]:bg-white/70`}
+>
+
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2 overflow-x-auto overflow-y-visible py-1 -mx-1 px-1">
             {["Todos", "Activo", "Próximo", "Finalizado"].map((t) => (
               <button
-                key={t}
-                onClick={() => setTab(t as any)}
-                className={`${pill} px-4 py-1.5 text-sm transition`}
-                style={
-                  tab === t
-                    ? { background: "linear-gradient(90deg, var(--tw-gradient-from), var(--tw-gradient-to))" }
-                    : {}
-                }
-              >
-                <span className={tab === t ? "text-white" : "text-gray-700"}>
-                  <span className={tab === t ? "bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 bg-clip-text text-transparent" : ""}>
-                    {t}
-                  </span>
-                </span>
-              </button>
+  key={t}
+  onClick={() => setTab(t as any)}
+  className={`${pill} px-4 py-1.5 text-sm transition ring-1
+              ${tab === t
+                ? "bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 text-white ring-tecnm-azul/40 shadow-md"
+                : "text-slate-700 ring-slate-200 hover:bg-slate-50"}`}
+>
+  {t}
+</button>
+
             ))}
           </div>
 
