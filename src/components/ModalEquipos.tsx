@@ -14,12 +14,11 @@ import {
   getDocs,
   query,
   serverTimestamp,
-  Timestamp,
   updateDoc,
   where,
 } from "firebase/firestore"
 
-/* ===== Tipos mínimos para que el componente sea independiente ===== */
+/* ===== Tipos mínimos ===== */
 export type Concurso = {
   id: string
   nombre?: string
@@ -107,11 +106,12 @@ export default function ModalEquipos({
   const [encuestas, setEncuestas] = useState<{ id: string; titulo?: string }[]>([])
   const [encuestaDestino, setEncuestaDestino] = useState<string>("")
 
-  // editar / ver estados
-  const [editEq, setEditEq] = useState<Equipo | null>(null)
-  const [viewEq, setViewEq] = useState<Equipo | null>(null)
+  // estado del modal de detalles (seleccionado) + modo edición
+  const [detailEq, setDetailEq] = useState<Equipo | null>(null)
+  const [isEditing, setIsEditing] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
   const [savingAdd, setSavingAdd] = useState(false)
+  const [snapshotEq, setSnapshotEq] = useState<Equipo | null>(null) // para Cancelar
 
   // campos añadir rápido
   const [aNombreEquipo, setANombreEquipo] = useState("")
@@ -153,7 +153,7 @@ export default function ModalEquipos({
     )
   }, [busq, lista])
 
-  const totalParticipantes = React.useMemo(() => {
+  const totalParticipantes = useMemo(() => {
     return filtrados.reduce((acc, eq) => {
       const integrantes = Array.isArray(eq.integrantes) ? eq.integrantes.length : 0
       const lider = eq.nombreLider?.trim() ? 1 : 0
@@ -166,6 +166,7 @@ export default function ModalEquipos({
     try {
       await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
       setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
+      setDetailEq((curr) => (curr && curr._respId === eq._respId ? { ...curr, pagado: val } : curr))
     } catch {
       alert("No se pudo actualizar el estado de pago.")
     }
@@ -177,30 +178,42 @@ export default function ModalEquipos({
     try {
       await deleteDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId))
       setLista((prev) => prev.filter((x) => x._respId !== eq._respId))
+      setDetailEq(null); setIsEditing(false)
     } catch {
       alert("No se pudo eliminar.")
     }
   }
 
   const guardarEdicion = async () => {
-    if (!editEq || !editEq._encuestaId || !editEq._respId) return
+    if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
     try {
       setSavingEdit(true)
       const patch: any = {
         preset: {
-          nombreEquipo: editEq.nombreEquipo || "",
-          nombreLider: editEq.nombreLider || "",
-          contactoEquipo: editEq.contactoEquipo || "",
-          categoria: editEq.categoria || "",
-          integrantes: Array.isArray(editEq.integrantes) ? editEq.integrantes : [],
+          nombreEquipo: detailEq.nombreEquipo || "",
+          nombreLider: detailEq.nombreLider || "",
+          contactoEquipo: detailEq.contactoEquipo || "",
+          categoria: detailEq.categoria || "",
+          integrantes: Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
         },
-        custom: { p1: editEq.maestroAsesor || "", p2: editEq.institucion || "", p3: editEq.telefono || "", p4: editEq.escolaridad || "" },
-        pagado: !!editEq.pagado,
+        custom: {
+          p1: detailEq.maestroAsesor || "",
+          p2: detailEq.institucion || "",
+          p3: detailEq.telefono || "",
+          p4: detailEq.escolaridad || "",
+        },
+        pagado: !!detailEq.pagado,
       }
-      await updateDoc(fsDoc(db, "encuestas", editEq._encuestaId, "respuestas", editEq._respId), patch)
-      setLista((prev) => prev.map((x) => (x._respId === editEq._respId ? { ...x, ...editEq } : x)))
-      setEditEq(null)
+      await updateDoc(fsDoc(db, "encuestas", detailEq._encuestaId, "respuestas", detailEq._respId), patch)
+      setLista((prev) => prev.map((x) => (x._respId === detailEq._respId ? { ...x, ...detailEq } : x)))
+      setIsEditing(false)
+      setSnapshotEq(detailEq)
     } finally { setSavingEdit(false) }
+  }
+
+  const cancelarEdicion = () => {
+    if (snapshotEq) setDetailEq(snapshotEq)
+    setIsEditing(false)
   }
 
   const añadirRapido = async () => {
@@ -212,8 +225,19 @@ export default function ModalEquipos({
         createdAt: serverTimestamp(),
         submittedAt: serverTimestamp(),
         pagado: aPagado,
-        preset: { nombreEquipo: aNombreEquipo.trim() || "Equipo", nombreLider: aNombreLider.trim() || "", contactoEquipo: aEmail.trim() || "", categoria: aCategoria.trim() || "", integrantes },
-        custom: { p1: aAsesor.trim() || "", p2: aInstitucion.trim() || "", p3: aTelefono.trim() || "", p4: aEscolaridad.trim() || "" },
+        preset: {
+          nombreEquipo: aNombreEquipo.trim() || "Equipo",
+          nombreLider: aNombreLider.trim() || "",
+          contactoEquipo: aEmail.trim() || "",
+          categoria: aCategoria.trim() || "",
+          integrantes
+        },
+        custom: {
+          p1: aAsesor.trim() || "",
+          p2: aInstitucion.trim() || "",
+          p3: aTelefono.trim() || "",
+          p4: aEscolaridad.trim() || ""
+        },
       }
       const refDoc = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
       const nuevo: Equipo = {
@@ -228,15 +252,27 @@ export default function ModalEquipos({
     } finally { setSavingAdd(false) }
   }
 
+  useEffect(() => {
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      if (detailEq) { setDetailEq(null); setIsEditing(false); return }
+      onClose()
+    }
+  }
+  window.addEventListener("keydown", onKey)
+  return () => window.removeEventListener("keydown", onKey)
+}, [detailEq, onClose])
+
+
   if (!open) return null
 
   return (
     <AnimatePresence>
-      {/* overlay con glass y sombra intensa */}
+      {/* overlay global del modal principal */}
       <motion.div
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-md"
-        onClick={onClose}
+        onClick={() => { setDetailEq(null); setIsEditing(false); onClose() }}
       />
       <motion.div
         initial={{ opacity: 0, y: 24, scale: 0.98 }}
@@ -245,17 +281,17 @@ export default function ModalEquipos({
         transition={{ duration: 0.22 }}
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
-        {/* contenedor con ring + sombra gorda + glass */}
+        {/* contenedor principal */}
         <div
           className="relative w-full max-w-6xl overflow-hidden rounded-[22px]
                      bg-white/95 backdrop-blur-xl ring-1 ring-slate-200
                      shadow-[0_40px_120px_rgba(2,6,23,0.35),0_10px_30px_rgba(2,6,23,0.18)]"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* barrita de acento arriba */}
+          {/* barrita de acento */}
           <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700" />
 
-          {/* header sticky “glass” */}
+          {/* header sticky */}
           <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4
                           bg-white/90 backdrop-blur border-b border-slate-200">
             <div className="min-w-0">
@@ -267,7 +303,8 @@ export default function ModalEquipos({
             <button
               className="h-9 w-9 grid place-items-center rounded-full bg-white ring-1 ring-slate-200 shadow
                          hover:ring-tecnm-azul/40 active:scale-95"
-              onClick={onClose} aria-label="Cerrar"
+              onClick={() => { setDetailEq(null); setIsEditing(false); onClose() }}
+              aria-label="Cerrar"
             >
               ✕
             </button>
@@ -275,7 +312,7 @@ export default function ModalEquipos({
 
           {/* contenido scrollable */}
           <div className="p-5 space-y-4 max-h-[78vh] overflow-auto">
-            {/* Barra superior: buscador + contadores + añadir rápido */}
+            {/* Barra superior: búsqueda + contadores + añadir rápido */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto ring-1 ring-gray-200
                                 focus-within:ring-tecnm-azul/35`}>
@@ -290,7 +327,6 @@ export default function ModalEquipos({
                 />
               </div>
 
-              {/* chips de conteo */}
               <div className="flex items-center gap-2 text-xs">
                 <span className={`${pill} px-3 py-1 text-slate-700 ring-1 ring-slate-200`}>Equipos: <strong className="ml-1">{filtrados.length}</strong></span>
                 <span className={`${pill} px-3 py-1 text-slate-700 ring-1 ring-slate-200`}>Participantes: <strong className="ml-1">{totalParticipantes}</strong></span>
@@ -383,165 +419,233 @@ export default function ModalEquipos({
 
             {!cargando && !error && filtrados.length > 0 && (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {filtrados.map((eq) => (
-                  <Card
-                    key={eq.id}
-                    className={`relative p-4 rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm
-                                hover:shadow-lg hover:ring-tecnm-azul/30 transition`}
-                  >
-                    {/* chip de pagado con color */}
-                    <label
-                      className={`absolute top-2 right-2 z-10 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] font-medium
-                                  border ring-1 shadow-sm
-                                  ${eq.pagado
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200 ring-emerald-200"
-                                    : "bg-white/95 text-slate-700 border-slate-200 ring-slate-200"}`}
+                {filtrados.map((eq) => {
+                  const iniciales = eq.nombreEquipo?.slice(0, 2)?.toUpperCase() || "EQ"
+                  const integrantesCount = Array.isArray(eq.integrantes) ? eq.integrantes.length : 0
+                  return (
+                    <Card
+                      key={eq.id}
+                      className="relative p-4 rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm hover:shadow-lg hover:ring-tecnm-azul/30 transition cursor-pointer"
+                      onClick={() => {
+                        setDetailEq(eq)
+                        setSnapshotEq(eq) // para cancelar luego
+                        setIsEditing(false)
+                      }}
                     >
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={!!eq.pagado}
-                        onChange={(e) => togglePagado(eq, e.target.checked)}
-                      />
-                      <span>Pagado</span>
-                    </label>
+                      {/* chip pagado (no abre modal) */}
+                      <label
+                        className={`absolute top-2 right-2 z-10 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium
+                                    border ring-1 shadow-sm
+                                    ${eq.pagado
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 ring-emerald-200"
+                                      : "bg-white/95 text-slate-700 border-slate-200 ring-slate-200"}`}
+                        title="Marcar como pagado"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4"
+                          checked={!!eq.pagado}
+                          onChange={(e) => togglePagado(eq, e.target.checked)}
+                        />
+                        <span>{eq.pagado ? "Pagado" : "Pendiente"}</span>
+                      </label>
 
-                    {/* contenido */}
-                    <div className="flex items-start gap-3 mt-6">
-                      <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
-                        {eq.nombreEquipo?.slice(0, 2)?.toUpperCase() || "EQ"}
+                      {/* contenido compacto */}
+                      <div className="flex items-start gap-3 mt-6">
+                        <div className="h-11 w-11 shrink-0 grid place-items-center rounded-xl bg-gradient-to-br from-tecnm-azul/15 to-tecnm-azul/5 text-tecnm-azul font-bold">
+                          {iniciales}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
+                            {eq.categoria && <Chip tone="azul">{eq.categoria}</Chip>}
+                          </div>
+                          <p className="text-xs text-gray-600 mt-0.5 truncate">
+                            Líder: {eq.nombreLider || "—"}{eq.institucion ? ` · ${eq.institucion}` : ""}
+                          </p>
+                          {eq.contactoEquipo && (
+                            <p className="text-xs text-gray-500 truncate">{eq.contactoEquipo}</p>
+                          )}
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-700">
+                            <span className={`${pill} px-2.5 py-1 ring-1 ring-slate-200`}>{integrantesCount} integrantes</span>
+                            {eq.submittedAt && (
+                              <span className={`${pill} px-2.5 py-1 ring-1 ring-slate-200`}>
+                                Enviado: {new Date(eq.submittedAt).toLocaleDateString()}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
-                          {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
-                        </div>
-                        <p className="text-xs text-gray-600">
-                          Líder: {eq.nombreLider || "—"}
-                          {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
-                        </p>
-
-                        <div className="mt-2">
-                          <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
-                          <ul className="text-sm list-disc ml-5 space-y-0.5">
-                            {eq.integrantes?.length ? eq.integrantes.map((n, i) => <li key={i}>{n}</li>) : <li>—</li>}
-                          </ul>
-                        </div>
-
-                        <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
-                          <Info label="Contacto" value={eq.contactoEquipo} />
-                          <Info label="Maestro asesor" value={eq.maestroAsesor} />
-                          <Info label="Institución" value={eq.institucion} />
-                          <Info label="Escolaridad" value={eq.escolaridad} />
-                          <Info label="Teléfono" value={eq.telefono} />
-                        </div>
-
-                        <div className="flex items-center gap-2 mt-3">
-                          <Button variant="outline" size="sm" className="rounded-full" onClick={() => setViewEq(eq)}>Ver</Button>
-                          <Button variant="outline" size="sm" className="rounded-full" onClick={() => setEditEq(eq)}>Editar</Button>
-                          <Button variant="outline" size="sm" className="rounded-full text-rose-600" onClick={() => eliminarEquipo(eq)}>Eliminar</Button>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                ))}
+                    </Card>
+                  )
+                })}
               </div>
             )}
           </div>
         </div>
 
-        {/* Modal VER */}
+        {/* Modal DETALLES (lectura) + switch a EDICIÓN */}
         <AnimatePresence>
-          {viewEq && (
+          {detailEq && (
             <>
-              <motion.div className="fixed inset-0 bg-slate-900/60 backdrop-blur" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setViewEq(null)} />
-              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{ opacity: 0, y: 8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.98 }}>
-                <Card className="w-full max-w-lg p-4 rounded-2xl ring-1 ring-slate-200 shadow-xl bg-white/95 backdrop-blur">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-base font-semibold">Detalle del equipo</h3>
-                    <Button variant="outline" size="sm" onClick={() => setViewEq(null)}>Cerrar</Button>
-                  </div>
-                  <div className="mt-3 grid gap-2 text-sm">
-                    <Info label="Equipo" value={viewEq.nombreEquipo} />
-                    <Info label="Líder" value={viewEq.nombreLider} />
-                    <Info label="Correo" value={viewEq.contactoEquipo} />
-                    <Info label="Categoría" value={viewEq.categoria} />
-                    <Info label="Integrantes" value={(viewEq.integrantes || []).join(", ")} />
-                    <Info label="Maestro asesor" value={viewEq.maestroAsesor} />
-                    <Info label="Institución" value={viewEq.institucion} />
-                    <Info label="Teléfono" value={viewEq.telefono} />
-                    <Info label="Escolaridad" value={viewEq.escolaridad} />
-                    <Info label="Pago" value={viewEq.pagado ? "Pagado" : "Pendiente"} />
-                  </div>
-                </Card>
-              </motion.div>
-            </>
-          )}
-        </AnimatePresence>
+              {/* Overlay: clic afuera cierra */}
+              <motion.div
+                className="fixed inset-0 bg-slate-900/60 backdrop-blur"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => { setDetailEq(null); setIsEditing(false) }}
+              />
+              <motion.div
+                className="fixed inset-0 grid place-items-center p-4"
+                initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              >
+                <Card className="w-full max-w-2xl p-4 rounded-2xl ring-1 ring-slate-200 shadow-xl bg-white/95 backdrop-blur" onClick={(e)=>e.stopPropagation()}>
+                  {/* Encabezado compacto */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="text-base font-semibold truncate">Detalles del equipo</h3>
+                      <p className="text-xs text-gray-500 truncate">
+                        ID: {detailEq._respId || detailEq.id} {detailEq.submittedAt ? `· ${new Date(detailEq.submittedAt).toLocaleString()}` : ""}
+                      </p>
+                    </div>
 
-        {/* Modal EDITAR */}
-        <AnimatePresence>
-          {editEq && (
-            <>
-              <motion.div className="fixed inset-0 bg-slate-900/60 backdrop-blur" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setEditEq(null)} />
-              <motion.div className="fixed inset-0 grid place-items-center p-4" initial={{ opacity: 0, y: 8, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.98 }}>
-                <Card className="w-full max-w-2xl p-4 rounded-2xl ring-1 ring-slate-200 shadow-xl bg-white/95 backdrop-blur">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-base font-semibold">Editar equipo</h3>
-                    <Button variant="outline" size="sm" onClick={() => setEditEq(null)}>Cerrar</Button>
+                    <div className="flex items-center gap-2">
+                      {!isEditing ? (
+                        <>
+                          <Button variant="outline" size="sm" onClick={() => { setSnapshotEq(detailEq); setIsEditing(true) }}>
+                            Editar
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-rose-600 border-rose-200 hover:bg-rose-50"
+                            onClick={() => eliminarEquipo(detailEq)}
+                          >
+                            Eliminar
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button variant="outline" size="sm" onClick={cancelarEdicion}>Cancelar</Button>
+                          <Button size="sm" onClick={guardarEdicion} disabled={savingEdit}>
+                            {savingEdit ? "Guardando…" : "Guardar"}
+                          </Button>
+                        </>
+                      )}
+
+                      {/* ✕ cerrar */}
+                      <button
+                        aria-label="Cerrar"
+                        onClick={() => { setDetailEq(null); setIsEditing(false) }}
+                        className="h-8 w-8 grid place-items-center rounded-full bg-white ring-1 ring-slate-200 shadow hover:ring-tecnm-azul/40 active:scale-95"
+                        title="Cerrar"
+                      >
+                        ✕
+                      </button>
+                    </div>
                   </div>
 
+
+                  {/* Cuerpo: misma grilla que “editar”, pero disabled si no está en edición */}
                   <div className="grid md:grid-cols-2 gap-2 mt-3">
                     <Field label="Nombre del equipo">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreEquipo || ""} onChange={(e) => setEditEq({ ...editEq, nombreEquipo: e.target.value })} />
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.nombreEquipo || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, nombreEquipo: e.target.value })}
+                        disabled={!isEditing}
+                      />
                     </Field>
                     <Field label="Nombre del líder">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.nombreLider || ""} onChange={(e) => setEditEq({ ...editEq, nombreLider: e.target.value })} />
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.nombreLider || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, nombreLider: e.target.value })}
+                        disabled={!isEditing}
+                      />
                     </Field>
                     <Field label="Correo del equipo">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.contactoEquipo || ""} onChange={(e) => setEditEq({ ...editEq, contactoEquipo: e.target.value })} />
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.contactoEquipo || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, contactoEquipo: e.target.value })}
+                        disabled={!isEditing}
+                      />
                     </Field>
                     <Field label="Categoría">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.categoria || ""} onChange={(e) => setEditEq({ ...editEq, categoria: e.target.value })} />
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.categoria || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, categoria: e.target.value })}
+                        disabled={!isEditing}
+                      />
                     </Field>
                     <Field label="Integrantes (coma)">
                       <input
                         className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={(editEq.integrantes || []).join(", ")}
+                        value={(detailEq.integrantes || []).join(", ")}
                         onChange={(e) =>
-                          setEditEq({
-                            ...editEq,
+                          setDetailEq({
+                            ...detailEq,
                             integrantes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
                           })
                         }
+                        disabled={!isEditing}
                       />
                     </Field>
-                    <div className="flex items-center gap-2">
+                    <Field label="Maestro asesor">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.maestroAsesor || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, maestroAsesor: e.target.value })}
+                        disabled={!isEditing}
+                      />
+                    </Field>
+                    <Field label="Institución">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.institucion || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, institucion: e.target.value })}
+                        disabled={!isEditing}
+                      />
+                    </Field>
+                    <Field label="Teléfono">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.telefono || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, telefono: e.target.value })}
+                        disabled={!isEditing}
+                      />
+                    </Field>
+                    <Field label="Escolaridad">
+                      <input
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={detailEq.escolaridad || ""}
+                        onChange={(e) => setDetailEq({ ...detailEq, escolaridad: e.target.value })}
+                        disabled={!isEditing}
+                      />
+                    </Field>
+
+                    <div className="md:col-span-2 grid md:grid-cols-2 gap-2">
+                      <Info label="Encuesta ID" value={detailEq._encuestaId || "—"} />
+                      <Info label="Respuesta ID" value={detailEq._respId || detailEq.id} />
+                    </div>
+
+                    <div className="md:col-span-2">
                       <label className="text-sm text-gray-700 inline-flex items-center gap-2">
-                        <input type="checkbox" checked={!!editEq.pagado} onChange={(e) => setEditEq({ ...editEq, pagado: e.target.checked })} />
+                        <input
+                          type="checkbox"
+                          checked={!!detailEq.pagado}
+                          onChange={(e) => setDetailEq({ ...detailEq, pagado: e.target.checked })}
+                          disabled={!isEditing}
+                        />
                         Pagado
                       </label>
                     </div>
-
-                    <Field label="Maestro asesor">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.maestroAsesor || ""} onChange={(e) => setEditEq({ ...editEq, maestroAsesor: e.target.value })} />
-                    </Field>
-                    <Field label="Institución">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.institucion || ""} onChange={(e) => setEditEq({ ...editEq, institucion: e.target.value })} />
-                    </Field>
-                    <Field label="Teléfono">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.telefono || ""} onChange={(e) => setEditEq({ ...editEq, telefono: e.target.value })} />
-                    </Field>
-                    <Field label="Escolaridad">
-                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={editEq.escolaridad || ""} onChange={(e) => setEditEq({ ...editEq, escolaridad: e.target.value })} />
-                    </Field>
-                  </div>
-
-                  <div className="mt-3 flex justify-end gap-2">
-                    <Button variant="outline" onClick={() => setEditEq(null)}>Cancelar</Button>
-                    <Button onClick={guardarEdicion} disabled={savingEdit}>
-                      {savingEdit ? "Guardando…" : "Guardar cambios"}
-                    </Button>
                   </div>
                 </Card>
               </motion.div>
