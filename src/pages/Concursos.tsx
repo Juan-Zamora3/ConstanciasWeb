@@ -665,6 +665,16 @@ function ModalEquipos({
     )
   }, [busq, lista])
 
+  const totalEquipos = filtrados.length;
+
+const totalParticipantes = React.useMemo(() => {
+  return filtrados.reduce((acc, eq) => {
+    const integrantes = Array.isArray(eq.integrantes) ? eq.integrantes.length : 0;
+    const lider = eq.nombreLider?.trim() ? 1 : 0; // cuenta líder si existe
+    return acc + integrantes + lider;
+  }, 0);
+}, [filtrados]);
+
   const togglePagado = async (eq: Equipo, val: boolean) => {
     if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
     try {
@@ -820,191 +830,213 @@ function ModalEquipos({
             </button>
           </div>
 
-          <div className="p-5 space-y-3 max-h-[78vh] overflow-auto">
-            {/* Barra superior: buscador + añadir rápido */}
-            <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto ring-1 ring-gray-200`}>
-                <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
-                  <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
-                </svg>
-                <input
-                  value={busq}
-                  onChange={(e) => setBusq(e.target.value)}
-                  placeholder="Buscar equipo, líder, categoría, institución…"
-                  className="w-full md:w-80 outline-none text-sm bg-transparent"
-                />
-              </div>
+         <div className="p-5 space-y-3 max-h-[78vh] overflow-auto">
+  {/* Barra superior: buscador + contadores + añadir rápido */}
+  <div className="flex flex-col md:flex-row md:items-center gap-2">
+    <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto ring-1 ring-gray-200`}>
+      <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
+        <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
+      </svg>
+      <input
+        value={busq}
+        onChange={(e) => setBusq(e.target.value)}
+        placeholder="Buscar equipo, líder, categoría, institución…"
+        className="w-full md:w-80 outline-none text-sm bg-transparent"
+      />
+    </div>
 
-              <div className="flex-1" />
+    {/* chips de conteo */}
+    <div className="flex items-center gap-2 text-xs">
+      <span className={`${pill} px-3 py-1 text-gray-700`}>
+        Equipos: <strong className="ml-1">{filtrados.length}</strong>
+      </span>
+      <span className={`${pill} px-3 py-1 text-gray-700`}>
+        Participantes:{" "}
+        <strong className="ml-1">
+          {
+            filtrados.reduce(
+              (acc, eq) =>
+                acc +
+                (Array.isArray(eq.integrantes) ? eq.integrantes.length : 0) +
+                (eq.nombreLider?.trim() ? 1 : 0),
+              0
+            )
+          }
+        </strong>
+      </span>
+    </div>
 
-              <Button variant="outline" className={`${pill} px-4 py-2`} onClick={() => setAddingOpen((v) => !v)}>
-                {addingOpen ? "Cerrar añadir" : "Añadir rápido"}
-              </Button>
+    <div className="flex-1" />
+
+    <Button variant="outline" className={`${pill} px-4 py-2`} onClick={() => setAddingOpen((v) => !v)}>
+      {addingOpen ? "Cerrar añadir" : "Añadir rápido"}
+    </Button>
+  </div>
+
+  {/* Añadir rápido */}
+  {addingOpen && (
+    <Card className={`${modalInset} p-3`}>
+      <div className="grid md:grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs text-gray-600">Encuesta destino</label>
+          <select
+            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+            value={encuestaDestino}
+            onChange={(e) => setEncuestaDestino(e.target.value)}
+          >
+            {encuestas.length === 0 ? (
+              <option value="">(No hay encuestas para este curso)</option>
+            ) : (
+              encuestas.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.titulo || e.id}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+        <div className="flex items-center gap-2 mt-6">
+          <label className="text-xs text-gray-600 inline-flex items-center gap-2">
+            <input type="checkbox" checked={aPagado} onChange={(e) => setAPagado(e.target.checked)} />
+            Marcar como pagado
+          </label>
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-600">Nombre del equipo *</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreEquipo} onChange={(e) => setANombreEquipo(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600">Nombre del líder</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreLider} onChange={(e) => setANombreLider(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600">Correo del equipo</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEmail} onChange={(e) => setAEmail(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600">Categoría</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aCategoria} onChange={(e) => setACategoria(e.target.value)} />
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs text-gray-600">Integrantes (separados por coma)</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aIntegrantes} onChange={(e) => setAIntegrantes(e.target.value)} placeholder="Persona 1, Persona 2, Persona 3…" />
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-600">Maestro asesor</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aAsesor} onChange={(e) => setAAsesor(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600">Institución</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aInstitucion} onChange={(e) => setAInstitucion(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600">Teléfono</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aTelefono} onChange={(e) => setATelefono(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-600">Escolaridad</label>
+          <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEscolaridad} onChange={(e) => setAEscolaridad(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mt-3 flex justify-end gap-2">
+        <Button variant="outline" onClick={() => setAddingOpen(false)}>
+          Cancelar
+        </Button>
+        <Button onClick={añadirRapido} disabled={savingAdd || !aNombreEquipo.trim()}>
+          {savingAdd ? "Guardando…" : "Añadir"}
+        </Button>
+      </div>
+    </Card>
+  )}
+
+  {/* Lista */}
+  {cargando && <Card className={`${modalInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
+  {error && !cargando && <Card className={`${modalInset} p-6 text-sm text-rose-600`}>{error}</Card>}
+  {!cargando && !error && filtrados.length === 0 && (
+    <Card className={`${modalInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>
+  )}
+
+  {!cargando && !error && filtrados.length > 0 && (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {filtrados.map((eq) => (
+        <Card key={eq.id} className={`p-4 ${modalSurface} relative`}>
+          {/* Chip/checkbox de Pagado - arriba a la derecha */}
+          <label
+            className="absolute top-2 right-2 z-10 inline-flex items-center gap-2 rounded-full
+                       bg-white/95 backdrop-blur px-2.5 py-1 text-[11px] font-medium
+                       border border-gray-200 ring-1 ring-gray-200 shadow-sm"
+          >
+            <input
+              type="checkbox"
+              className="h-4 w-4"
+              checked={!!eq.pagado}
+              onChange={(e) => togglePagado(eq, e.target.checked)}
+            />
+            <span>Pagado</span>
+          </label>
+
+          {/* margen para no chocar con el chip */}
+          <div className="flex items-start gap-3 mt-6">
+            <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
+              {eq.nombreEquipo?.slice(0, 2)?.toUpperCase() || "EQ"}
             </div>
-
-            {/* Añadir rápido */}
-            {addingOpen && (
-              <Card className={`${modalInset} p-3`}>
-                <div className="grid md:grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs text-gray-600">Encuesta destino</label>
-                    <select
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                      value={encuestaDestino}
-                      onChange={(e) => setEncuestaDestino(e.target.value)}
-                    >
-                      {encuestas.length === 0 ? (
-                        <option value="">(No hay encuestas para este curso)</option>
-                      ) : (
-                        encuestas.map((e) => (
-                          <option key={e.id} value={e.id}>
-                            {e.titulo || e.id}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2 mt-6">
-                    <label className="text-xs text-gray-600 inline-flex items-center gap-2">
-                      <input type="checkbox" checked={aPagado} onChange={(e) => setAPagado(e.target.checked)} />
-                      Marcar como pagado
-                    </label>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-gray-600">Nombre del equipo *</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreEquipo} onChange={(e) => setANombreEquipo(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Nombre del líder</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aNombreLider} onChange={(e) => setANombreLider(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Correo del equipo</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEmail} onChange={(e) => setAEmail(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Categoría</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aCategoria} onChange={(e) => setACategoria(e.target.value)} />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="text-xs text-gray-600">Integrantes (separados por coma)</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aIntegrantes} onChange={(e) => setAIntegrantes(e.target.value)} placeholder="Persona 1, Persona 2, Persona 3…" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-gray-600">Maestro asesor</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aAsesor} onChange={(e) => setAAsesor(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Institución</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aInstitucion} onChange={(e) => setAInstitucion(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Teléfono</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aTelefono} onChange={(e) => setATelefono(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Escolaridad</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEscolaridad} onChange={(e) => setAEscolaridad(e.target.value)} />
-                  </div>
-                </div>
-
-                <div className="mt-3 flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setAddingOpen(false)}>
-                    Cancelar
-                  </Button>
-                  <Button onClick={añadirRapido} disabled={savingAdd || !aNombreEquipo.trim()}>
-                    {savingAdd ? "Guardando…" : "Añadir"}
-                  </Button>
-                </div>
-              </Card>
-            )}
-
-            {/* Lista */}
-            {cargando && <Card className={`${modalInset} p-6 text-sm text-gray-600`}>Cargando equipos…</Card>}
-            {error && !cargando && <Card className={`${modalInset} p-6 text-sm text-rose-600`}>{error}</Card>}
-            {!cargando && !error && filtrados.length === 0 && (
-              <Card className={`${modalInset} p-6 text-sm text-gray-600`}>No se encontraron respuestas para este concurso.</Card>
-            )}
-
-            {!cargando && !error && filtrados.length > 0 && (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {filtrados.map((eq) => (
-                  <Card key={eq.id} className={`p-4 ${modalSurface} relative`}>
-                    {/* Chip/checkbox de Pagado - arriba a la derecha */}
-                    <label
-                      className="absolute top-2 right-2 z-10 inline-flex items-center gap-2 rounded-full
-                                 bg-white/95 backdrop-blur px-2.5 py-1 text-[11px] font-medium
-                                 border border-gray-200 ring-1 ring-gray-200 shadow-sm"
-                    >
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={!!eq.pagado}
-                        onChange={(e) => togglePagado(eq, e.target.checked)}
-                      />
-                      <span>Pagado</span>
-                    </label>
-
-                    {/* margen para no chocar con el chip */}
-                    <div className="flex items-start gap-3 mt-6">
-                      <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
-                        {eq.nombreEquipo?.slice(0, 2)?.toUpperCase() || "EQ"}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
-                          {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
-                        </div>
-                        <p className="text-xs text-gray-600">
-                          Líder: {eq.nombreLider || "—"}
-                          {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
-                        </p>
-
-                        <div className="mt-2">
-                          <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
-                          <ul className="text-sm list-disc ml-5 space-y-0.5">
-                            {eq.integrantes?.length ? (
-                              eq.integrantes.map((n, i) => <li key={i}>{n}</li>)
-                            ) : (
-                              <li>—</li>
-                            )}
-                          </ul>
-                        </div>
-
-                        <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
-                          <Info label="Contacto" value={eq.contactoEquipo} />
-                          <Info label="Maestro asesor" value={eq.maestroAsesor} />
-                          <Info label="Institución" value={eq.institucion} />
-                          <Info label="Escolaridad" value={eq.escolaridad} />
-                          <Info label="Teléfono" value={eq.telefono} />
-                        </div>
-
-                        {/* Acciones */}
-                        <div className="flex items-center gap-2 mt-3">
-                          <Button variant="outline" size="sm" className="rounded-full" onClick={() => setViewEq(eq)}>
-                            Ver
-                          </Button>
-                          <Button variant="outline" size="sm" className="rounded-full" onClick={() => setEditEq(eq)}>
-                            Editar
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="rounded-full text-rose-600"
-                            onClick={() => eliminarEquipo(eq)}
-                          >
-                            Eliminar
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                ))}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold truncate">{eq.nombreEquipo || "Equipo"}</h3>
+                {eq.categoria && <Chip tone="gris">{eq.categoria}</Chip>}
               </div>
-            )}
+              <p className="text-xs text-gray-600">
+                Líder: {eq.nombreLider || "—"}
+                {eq.submittedAt && <> · Enviado: {new Date(eq.submittedAt).toLocaleString()}</>}
+              </p>
+
+              <div className="mt-2">
+                <p className="text-xs text-gray-500 mb-1">Integrantes:</p>
+                <ul className="text-sm list-disc ml-5 space-y-0.5">
+                  {eq.integrantes?.length ? (
+                    eq.integrantes.map((n, i) => <li key={i}>{n}</li>)
+                  ) : (
+                    <li>—</li>
+                  )}
+                </ul>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-2 mt-3 text-sm">
+                <Info label="Contacto" value={eq.contactoEquipo} />
+                <Info label="Maestro asesor" value={eq.maestroAsesor} />
+                <Info label="Institución" value={eq.institucion} />
+                <Info label="Escolaridad" value={eq.escolaridad} />
+                <Info label="Teléfono" value={eq.telefono} />
+              </div>
+
+              {/* Acciones */}
+              <div className="flex items-center gap-2 mt-3">
+                <Button variant="outline" size="sm" className="rounded-full" onClick={() => setViewEq(eq)}>
+                  Ver
+                </Button>
+                <Button variant="outline" size="sm" className="rounded-full" onClick={() => setEditEq(eq)}>
+                  Editar
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full text-rose-600"
+                  onClick={() => eliminarEquipo(eq)}
+                >
+                  Eliminar
+                </Button>
+              </div>
+            </div>
           </div>
+        </Card>
+      ))}
+    </div>
+  )}
+</div>
+
         </div>
 
         {/* Modal VER */}
