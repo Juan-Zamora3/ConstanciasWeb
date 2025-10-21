@@ -9,8 +9,8 @@ export default function Navbar() {
 
   return (
     <header className="sticky top-0 z-50">
-      <div className="mx-auto max-w-7xl px-3 pt-3">
-        <div className="rounded-2xl bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 text-white shadow-glass">
+      <div className="mx-auto w-full max-w-[calc(80vw-32px)] px-3 pt-3">
+    <div className="rounded-2xl bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 text-white shadow-glass">
           <div className="flex items-center justify-between px-4 py-2.5">
             {/* Marca */}
             <Link to="/" className="flex items-center gap-3">
