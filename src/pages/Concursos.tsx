@@ -4,9 +4,11 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
-import { Pencil, Layers, FileText, UserPlus, HandCoins } from "lucide-react"
+
 // src/pages/Concursos.tsx (encabezado de imports)
 import ModalEquipos, {  type Equipo as EquipoModal } from "../components/ModalEquipos"
+import { Pencil, Layers, FileText, UserPlus, HandCoins, Trash2 } from "lucide-react"
+
 
 
 // Firebase
@@ -147,17 +149,22 @@ function IconBtn({
 }: {
   title: string
   onClick: () => void
-  variant?: "primary" | "outline"
+  variant?: "primary" | "outline" | "danger"
   children: React.ReactNode
 }) {
-  const base = "h-9 w-9 grid place-items-center rounded-full transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-tecnm-azul/30"
+  const base =
+    "h-9 w-9 grid place-items-center rounded-full transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-tecnm-azul/30"
 
   const styles =
     variant === "primary"
       ? "text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
+      : variant === "danger"
+      ? `${pill} bg-white text-rose-600 hover:bg-rose-50`
       : `${pill} bg-white text-tecnm-azul hover:brightness-[1.02]`
+
   return (
     <button
+      type="button"
       title={title}
       aria-label={title}
       className={`${base} ${styles}`}
@@ -170,6 +177,7 @@ function IconBtn({
     </button>
   )
 }
+
 
 /* ---------------- Modal EDITAR ---------------- */
 function EditCursoModal({
@@ -608,22 +616,24 @@ function Info({ label, value }: { label: string; value?: string }) {
 }
 
 /* ---------------- Tarjeta ---------------- */
+/* ---------------- Tarjeta ---------------- */
 function TarjetaConcurso({
   c,
   onOpenEquipos,
   onEdit,
   onAddCoord,
+  onDelete, // ⬅️ NUEVO
 }: {
   c: Concurso
   onOpenEquipos: (c: Concurso) => void
   onEdit: (c: Concurso) => void
   onAddCoord: (c: Concurso) => void
+  onDelete?: (c: Concurso) => void // ⬅️ NUEVO (opcional para no romper otros usos)
 }) {
   const navigate = useNavigate()
   const tone: "azul" | "gris" | "verde" =
     c.estatus === "Activo" ? "azul" : c.estatus === "Próximo" ? "gris" : "verde"
 
-  // gradiente/acento según estatus
   const accent =
     tone === "azul"
       ? "from-tecnm-azul to-tecnm-azul-700"
@@ -713,6 +723,17 @@ function TarjetaConcurso({
             >
               <HandCoins size={18} />
             </IconBtn>
+
+            {/* Eliminar */}
+            {onDelete && (
+              <IconBtn
+                title="Eliminar"
+                variant="danger"
+                onClick={() => onDelete(c)}
+              >
+                <Trash2 size={18} />
+              </IconBtn>
+            )}
           </div>
 
           <div className="pt-1">
@@ -726,6 +747,7 @@ function TarjetaConcurso({
     </motion.div>
   )
 }
+
 
 
 /* ------------------------------ Página ------------------------------ */
@@ -889,6 +911,22 @@ export default function Concursos() {
 
   /* ----------- Abrir modal EDITAR ----------- */
   const abrirEditar = (c: Concurso) => { setEditCurso(c); setEditOpen(true) }
+  const eliminarConcurso = async (c: Concurso) => {
+  const ok = confirm(`¿Eliminar el curso "${c.nombre}"? Esta acción no se puede deshacer.`)
+  if (!ok) return
+  try {
+    // Optimista: quita el card ya
+    setConcursos(prev => prev.filter(x => x.id !== c.id))
+    // Borra en Firestore
+    await deleteDoc(fsDoc(db, "Cursos", c.id))
+  } catch (e) {
+    console.error(e)
+    alert("No se pudo eliminar el curso.")
+    // Revertir si hubo error (opcional)
+    setConcursos(prev => [...prev, c])
+  }
+}
+
   const onSavedPatch = (patch: Partial<Concurso>) => {
     setConcursos((prev) => prev.map((x) => (x.id === (editCurso?.id || "") ? { ...x, ...patch } : x)))
   }
@@ -977,6 +1015,7 @@ export default function Concursos() {
                 onOpenEquipos={abrirEquipos}
                 onEdit={abrirEditar}
                 onAddCoord={(cc) => { setCursoCoord(cc); setAddCoordOpen(true) }}
+                onDelete={eliminarConcurso}     // ⬅️ aquí
               />
             ))}
           </div>
