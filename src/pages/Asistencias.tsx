@@ -139,6 +139,141 @@ const mergeWithLeader = (integrantes: string[], lider?: string): string[] => {
   return out
 }
 
+/* ---------------- Export reutilizable (pago directo) ---------------- */
+
+export type SaveAsistenciaPagoInput = {
+  cursoId: string
+  cursoNombre: string
+  requierePago: boolean
+  equipo: {
+    id: string
+    nombreEquipo: string
+    integrantes: string[]
+    nombreLider?: string
+    categoria?: string
+    contactoEquipo?: string
+    institucion?: string
+  }
+  asistencia: { presentes: string[] }
+  pago: {
+    cuotaEquipo: number
+    montoEntregado: number
+    cambioEntregado: number
+    folio?: string
+    metodo?: "Efectivo" | "Tarjeta" | "Transferencia" | "—"
+  }
+}
+
+export type SaveAsistenciaPagoResult = {
+  totalEsperado: number
+  netoCobrado: number
+  aplicadoAEsperado: number
+  faltante: number
+  pagado: boolean
+}
+
+/** Guarda asistencia/pago genérico */
+async function guardarAsistenciaPagoEquipo(
+  input: SaveAsistenciaPagoInput
+): Promise<SaveAsistenciaPagoResult> {
+  const {
+    cursoId,
+    cursoNombre,
+    requierePago,
+    equipo,
+    asistencia,
+    pago: { cuotaEquipo, montoEntregado, cambioEntregado, folio, metodo },
+  } = input
+
+  if (!cursoId) throw new Error("Falta cursoId")
+  if (!equipo?.id) throw new Error("Falta equipo.id")
+
+  const miembros = mergeWithLeader(equipo.integrantes || [], equipo.nombreLider)
+  const hayAsistencia = (asistencia.presentes?.length || 0) > 0
+
+  const totalEsperado     = requierePago ? (hayAsistencia ? Number(cuotaEquipo || 0) : 0) : 0
+  const netoCobrado       = requierePago ? Math.max(0, Number(montoEntregado || 0) - Number(cambioEntregado || 0)) : 0
+  const aplicadoAEsperado = requierePago ? Math.min(netoCobrado, totalEsperado) : 0
+  const faltante          = requierePago ? Math.max(0, totalEsperado - aplicadoAEsperado) : 0
+  const pagado            = requierePago ? (faltante === 0 && totalEsperado > 0) : true
+
+  const payload = {
+    cursoId,
+    cursoNombre,
+    equipoId: equipo.id,
+    nombreEquipo: equipo.nombreEquipo,
+    updatedAt: serverTimestamp(),
+
+    asistencia: {
+      presentes: asistencia.presentes || [],
+      totalPresentes: asistencia.presentes?.length || 0,
+      integrantesTotales: miembros.length,
+    },
+
+    pago: {
+      requierePago,
+      cuotaEquipo: requierePago ? Number(cuotaEquipo || 0) : 0,
+      totalEsperado,
+      montoEntregado: requierePago ? Number(montoEntregado || 0) : 0,
+      cambioEntregado: requierePago ? Number(cambioEntregado || 0) : 0,
+      netoCobrado: requierePago ? netoCobrado : 0,
+      aplicadoAEsperado: requierePago ? aplicadoAEsperado : 0,
+      faltante,
+      metodo: requierePago ? (metodo || "Efectivo") : "—",
+      folio: folio || null,
+      pagado,
+      fechaPago: serverTimestamp(),
+    },
+
+    categoria: equipo.categoria || null,
+    nombreLider: equipo.nombreLider || null,
+    contactoEquipo: equipo.contactoEquipo || null,
+    institucion: equipo.institucion || null,
+  }
+
+  const ref = fsDoc(db, "Cursos", cursoId, "asistencias", equipo.id)
+  await setDoc(ref, payload, { merge: true })
+
+  return { totalEsperado, netoCobrado, aplicadoAEsperado, faltante, pagado }
+}
+
+/** ========= Export principal: pagar (cobra la cuota completa, recibido=cuota, cambio=0) ========= */
+export type PagarEquipoInput = {
+  cursoId: string
+  cursoNombre: string
+  equipo: {
+    id: string
+    nombreEquipo: string
+    integrantes: string[]
+    nombreLider?: string
+    categoria?: string
+    contactoEquipo?: string
+    institucion?: string
+  }
+  presentes: string[]
+  cuota?: number        // por defecto 100
+  folio?: string
+  metodo?: "Efectivo" | "Tarjeta" | "Transferencia" | "—"
+}
+
+export async function pagarEquipo(input: PagarEquipoInput) {
+  const cuota = Number(input.cuota ?? 100)
+  return guardarAsistenciaPagoEquipo({
+    cursoId: input.cursoId,
+    cursoNombre: input.cursoNombre,
+    requierePago: true,
+    equipo: input.equipo,
+    asistencia: { presentes: input.presentes },
+    pago: {
+      cuotaEquipo: cuota,
+      montoEntregado: cuota, // 👈 recibido = cuota
+      cambioEntregado: 0,    // 👈 sin cambio
+      folio: input.folio,
+      metodo: input.metodo ?? "Efectivo",
+    },
+  })
+}
+
 /* ---------------- Página ---------------- */
 
 export default function Asistencias() {
@@ -285,7 +420,6 @@ export default function Asistencias() {
         const next = { ...prev }
         snap.forEach((doc) => {
           const d: any = doc.data() || {}
-          // Soporta docs nuevos (id=equipoId) y viejos (id=equipoId_fecha)
           const equipoId = String(d.equipoId || (doc.id || "").split("_")[0] || "")
           if (!equipoId) return
           const st = next[equipoId] || {}
@@ -356,6 +490,7 @@ export default function Asistencias() {
     const st = ui[id]
     if (!st) return 0
     if (!requierePago) return 0
+    // como no hay cambio en UI, neto = montoEntregado
     return Math.max(0, Number(st.montoEntregado || 0) - Number(st.cambioEntregado || 0))
   }
 
@@ -374,89 +509,55 @@ export default function Asistencias() {
   }
 
   const resumen = useMemo(() => {
-    // Caja: suma de netos (recibido - cambio) de equipos filtrados
     const sumaNeto = equiposFiltrados.reduce((acc, eq) => acc + netoEquipo(eq.id), 0)
     const caja = sumaNeto
-
-    // Total estimado: (equipos filtrados × cuota global) + caja inicial
     const estimacionEquipos = requierePago ? (equiposFiltrados.length * (Number(cuotaGlobal) || 0)) : 0
     const totalEstimado = cajaInicial + estimacionEquipos
-
-    return {
-      equipos: equiposFiltrados.length,
-      cajaInicial,
-      caja,
-      totalEstimado,
-      cuotaGlobal,
-    }
+    return { equipos: equiposFiltrados.length, cajaInicial, caja, totalEstimado, cuotaGlobal }
   }, [equiposFiltrados, ui, requierePago, cajaInicial, cuotaGlobal])
 
-  /* ----------- Guardado ----------- */
+  /* ----------- Pago (botón Pagar) ----------- */
 
-  const guardarEquipo = async (eq: Equipo) => {
+  const pagarUI = async (eq: Equipo) => {
     try {
-      actualizarUI(eq.id, { saving: true, error: null })
       const st = ui[eq.id]
       if (!st) return
+      const cuota = Number(st.cuotaEquipo || 100)
 
-      const docId = eq.id // ✅ un documento por equipo
-      const ref = fsDoc(db, "Cursos", cursoId, "asistencias", docId)
+      // refleja inmediatamente en UI que se recibieron los $cuota y no hay cambio
+      actualizarUI(eq.id, { saving: true, error: null, montoEntregado: cuota, cambioEntregado: 0 })
 
-      const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
-      const esperado = esperadoEquipo(eq.id)
-      const neto = netoEquipo(eq.id)
-      const cobrado = cobradoEquipo(eq.id)
-      const faltante = faltanteEquipo(eq.id)
-      const pagado = requierePago ? (faltante === 0 && esperado > 0) : true
-
-      const payload = {
+      await pagarEquipo({
         cursoId,
         cursoNombre: curso?.nombre || "",
-        equipoId: eq.id,
-        nombreEquipo: eq.nombreEquipo,
-        updatedAt: serverTimestamp(),
-
-        asistencia: {
-          presentes: st.presentes,
-          totalPresentes: st.presentes.length,
-          integrantesTotales: miembros.length,
+        equipo: {
+          id: eq.id,
+          nombreEquipo: eq.nombreEquipo,
+          integrantes: mergeWithLeader(eq.integrantes || [], eq.nombreLider),
+          nombreLider: eq.nombreLider,
+          categoria: eq.categoria,
+          contactoEquipo: eq.contactoEquipo,
+          institucion: eq.institucion,
         },
+        presentes: st.presentes,
+        cuota,                         // por defecto 100, o lo que tenga el equipo
+        folio: st.folio,
+        metodo: "Efectivo",
+      })
 
-        pago: {
-          requierePago,
-          cuotaEquipo: requierePago ? Number(st.cuotaEquipo || 0) : 0,
-          totalEsperado: esperado,
-          montoEntregado: requierePago ? Number(st.montoEntregado || 0) : 0,
-          cambioEntregado: requierePago ? Number(st.cambioEntregado || 0) : 0,
-          netoCobrado: requierePago ? neto : 0,
-          aplicadoAEsperado: requierePago ? cobrado : 0,
-          faltante,
-          metodo: requierePago ? "Efectivo" : "—",
-          folio: st.folio || null,
-          pagado, // 👈 lo que lee el Cajero
-          fechaPago: serverTimestamp(),
-        },
-
-        categoria: eq.categoria || null,
-        nombreLider: eq.nombreLider || null,
-        contactoEquipo: eq.contactoEquipo || null,
-        institucion: eq.institucion || null,
-      }
-
-      await setDoc(ref, payload, { merge: true })
       actualizarUI(eq.id, { saving: false, savedOk: true })
     } catch (e: any) {
       console.error(e)
-      actualizarUI(eq.id, { saving: false, savedOk: false, error: "No se pudo guardar. Revisa consola." })
-      alert("No se pudo guardar. Revisa la consola.")
+      actualizarUI(eq.id, { saving: false, savedOk: false, error: "No se pudo pagar. Revisa consola." })
+      alert("No se pudo pagar. Revisa la consola.")
     }
   }
 
-  const guardarMostrados = async () => {
+  const pagarMostrados = async () => {
     for (const eq of equiposFiltrados) {
-      await guardarEquipo(eq)
+      await pagarUI(eq)
     }
-    alert("Asistencia/Pagos guardados para los equipos mostrados.")
+    alert("Pagos aplicados para los equipos mostrados.")
   }
 
   /* ----------- Exportar ----------- */
@@ -478,7 +579,7 @@ export default function Asistencias() {
         "Presentes (#)": st?.presentes.length || 0,
         "Cuota (MXN)": requierePago ? (st?.cuotaEquipo ?? 0) : 0,
         "Recibido (MXN)": requierePago ? (st?.montoEntregado ?? 0) : 0,
-        "Cambio (MXN)": requierePago ? (st?.cambioEntregado ?? 0) : 0,
+        // Se omitió "Cambio (MXN)" porque ya no se usa en UI
         "Neto (MXN)": requierePago ? neto : 0,
         "Pagado": pagado ? "Sí" : "No",
         "Folio/Nota": st?.folio || "",
@@ -558,14 +659,12 @@ export default function Asistencias() {
       {/* Resumen + controles */}
       <Card className="p-4">
         <div className="flex flex-col gap-4">
-          {/* Resumen minimal */}
           <div className="grid gap-2 md:grid-cols-3">
             <ResumePill label="Caja inicial" value={`$${resumen.cajaInicial.toFixed(2)}`} />
             <ResumePill label="Caja" value={`$${resumen.caja.toFixed(2)}`} />
             <ResumePill label="Total estimado" value={`$${resumen.totalEstimado.toFixed(2)}`} />
           </div>
 
-          {/* Controles: pago/caja + filtros + cuota global */}
           <div className="grid gap-3 md:grid-cols-2">
             <div className="flex flex-wrap items-center gap-3">
               <label className="inline-flex items-center gap-2 text-sm">
@@ -631,7 +730,7 @@ export default function Asistencias() {
               </Button>
 
               <Button variant="outline" onClick={exportarExcel}>Exportar</Button>
-              <Button variant="solid" onClick={guardarMostrados}>Guardar mostrados</Button>
+              <Button variant="solid" onClick={pagarMostrados}>Pagar mostrados</Button>
             </div>
           </div>
         </div>
@@ -699,10 +798,10 @@ export default function Asistencias() {
                       </div>
                     </details>
 
-                    {/* Pago compacto */}
+                    {/* Pago compacto (sin "Cambio") */}
                     {requierePago ? (
                       <div className="mt-3 rounded-lg border bg-white p-3">
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-2 gap-2">
                           <div>
                             <label className="text-[11px] text-gray-600">Cuota (MXN)</label>
                             <input
@@ -725,22 +824,14 @@ export default function Asistencias() {
                               onChange={(e) => actualizarUI(eq.id, { montoEntregado: Number(e.target.value || 0), savedOk: false })}
                             />
                           </div>
-                          <div>
-                            <label className="text-[11px] text-gray-600">Cambio (MXN)</label>
-                            <input
-                              type="number"
-                              min={0}
-                              step="1"
-                              className="w-full rounded-lg border px-2 py-1"
-                              value={st?.cambioEntregado ?? 0}
-                              onChange={(e) => actualizarUI(eq.id, { cambioEntregado: Number(e.target.value || 0), savedOk: false })}
-                            />
-                          </div>
                         </div>
 
-                        <div className="mt-2 text-sm flex flex-wrap gap-3">
+                        <div className="mt-2 text-sm flex flex-wrap gap-2">
                           <span className={`px-2 py-0.5 rounded ${pagado ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
                             {pagado ? "Pagado" : `Pendiente: $${fal.toFixed(2)}`}
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                            Recibido: ${Number(st?.montoEntregado ?? 0).toFixed(2)}
                           </span>
                         </div>
 
@@ -753,12 +844,12 @@ export default function Asistencias() {
                           />
                           <Button
                             variant="solid"
-                            onClick={() => guardarEquipo(eq)}
+                            onClick={() => pagarUI(eq)}
                             disabled={st?.saving}
                           >
-                            {st?.saving ? "Guardando…" : "Guardar"}
+                            {st?.saving ? "Pagando…" : `Pagar $${Number(st?.cuotaEquipo ?? 0).toFixed(2)}`}
                           </Button>
-                          {st?.savedOk && <span className="text-emerald-700 text-sm">✓ Guardado</span>}
+                          {st?.savedOk && <span className="text-emerald-700 text-sm">✓ Pago registrado</span>}
                           {st?.error && <span className="text-red-600 text-sm">{st?.error}</span>}
                         </div>
                       </div>

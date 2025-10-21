@@ -16,8 +16,9 @@ import {
   serverTimestamp,
   updateDoc,
   where,
+    setDoc, // 👈 NUEVO
 } from "firebase/firestore"
-
+import { pagarEquipo } from "../pages/Asistencias"
 /* ===== Tipos mínimos ===== */
 export type Concurso = {
   id: string
@@ -82,6 +83,12 @@ function Info({ label, value }: { label: string; value?: string }) {
   )
 }
 
+function mergeWithLeaderNames(integrantes: string[] = [], lider?: string) {
+  const out = [...(integrantes || [])]
+  const l = (lider || "").trim()
+  if (l && !out.some((n) => n.trim().toLowerCase() === l.toLowerCase())) out.push(l)
+  return out
+}
 /* ===== Componente ===== */
 export default function ModalEquipos({
   open,
@@ -162,15 +169,52 @@ export default function ModalEquipos({
   }, [filtrados])
 
   const togglePagado = async (eq: Equipo, val: boolean) => {
-    if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
-    try {
-      await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
-      setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
-      setDetailEq((curr) => (curr && curr._respId === eq._respId ? { ...curr, pagado: val } : curr))
-    } catch {
-      alert("No se pudo actualizar el estado de pago.")
+  if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
+  try {
+    // 1) Si se marca como pagado, registra el pago en la subcolección de asistencias
+    if (val) {
+      if (!concurso?.id) return alert("Falta el cursoId para registrar el pago.")
+      const miembros = mergeWithLeaderNames(eq.integrantes, eq.nombreLider)
+
+      await pagarEquipo({
+        cursoId: concurso.id,
+        cursoNombre: concurso?.nombre || "Curso",
+        equipo: {
+          id: eq.id,
+          nombreEquipo: eq.nombreEquipo,
+          integrantes: miembros,
+          nombreLider: eq.nombreLider,
+          categoria: eq.categoria,
+          contactoEquipo: eq.contactoEquipo,
+          institucion: eq.institucion,
+        },
+        presentes: miembros, // asegura que haya asistencia>0 para calcular esperado
+        cuota: 100,          // 👈 cambia aquí si tu cuota es otra
+        metodo: "Efectivo",
+      })
+    } else {
+      // 2) Al desmarcar, refleja pagado:false en asistencias (opcional, pero útil)
+      if (concurso?.id) {
+        await setDoc(
+          fsDoc(db, "Cursos", concurso.id, "asistencias", eq.id),
+          { pago: { pagado: false } },
+          { merge: true }
+        )
+      }
     }
+
+    // 3) Siempre sincroniza el campo pagado en la respuesta de encuestas
+    await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
+
+    // 4) Refresca UI local
+    setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
+    setDetailEq((curr) => (curr && curr._respId === eq._respId ? { ...curr, pagado: val } : curr))
+  } catch (e) {
+    console.error(e)
+    alert("No se pudo actualizar el estado de pago.")
   }
+}
+
 
   const eliminarEquipo = async (eq: Equipo) => {
     if (!eq._encuestaId || !eq._respId) return alert("No se puede eliminar este registro.")
