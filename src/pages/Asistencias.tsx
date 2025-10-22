@@ -57,6 +57,8 @@ type EquipoUIState = {
   saving?: boolean
   savedOk?: boolean
   error?: string | null
+  /** ← viene directo del doc de Firestore (cuando lo marcaron pagado en otro lado) */
+  docPagado?: boolean
 }
 
 /* ---------------- Utilidades ---------------- */
@@ -415,24 +417,63 @@ export default function Asistencias() {
   useEffect(() => {
     if (!cursoId) return
     const col = collection(db, "Cursos", cursoId, "asistencias")
+
     const unsub = onSnapshot(col, (snap) => {
       setUi((prev) => {
         const next = { ...prev }
+
         snap.forEach((doc) => {
           const d: any = doc.data() || {}
-          const equipoId = String(d.equipoId || (doc.id || "").split("_")[0] || "")
+
+          // Usar SIEMPRE el id real; nada de split("_")
+          const equipoId = String(d.equipoId || doc.id || "")
           if (!equipoId) return
-          const st = next[equipoId] || {}
+
+          const stPrev = next[equipoId] || {}
+
+          // Cuota: prioriza la del doc; si no viene, usa totalEsperado; si no, conserva la de UI
+          const cuotaDoc = Number(
+            d.pago?.cuotaEquipo ??
+            d.pago?.totalEsperado ??
+            stPrev?.cuotaEquipo ??
+            0
+          )
+
+          // Presentes
+          let presentesDoc: string[] = Array.isArray(d.asistencia?.presentes)
+            ? d.asistencia.presentes
+            : (stPrev?.presentes || [])
+
+          if ((d.pago?.pagado === true) && (!presentesDoc || presentesDoc.length === 0)) {
+            // Si alguien marcó pagado sin guardar asistencia explícita, no dejes esperado=0
+            presentesDoc = stPrev?.presentes || []
+          }
+
+          // Monto recibido
+          let montoDoc = Number(
+            d.pago?.montoEntregado ??
+            stPrev?.montoEntregado ??
+            0
+          )
+
+          // Si el doc dice "pagado", fuerza recibido >= esperado
+          if (d.pago?.pagado === true) {
+            const esperadoDoc = Number(d.pago?.totalEsperado ?? cuotaDoc)
+            if (montoDoc < esperadoDoc) montoDoc = esperadoDoc
+          }
+
           next[equipoId] = {
-            ...st,
-            presentes: Array.isArray(d.asistencia?.presentes) ? d.asistencia.presentes : (st.presentes || []),
-            cuotaEquipo: Number(d.pago?.cuotaEquipo ?? st.cuotaEquipo ?? 0),
-            montoEntregado: Number(d.pago?.montoEntregado ?? st.montoEntregado ?? 0),
-            cambioEntregado: Number(d.pago?.cambioEntregado ?? st.cambioEntregado ?? 0),
-            folio: d.pago?.folio ?? st.folio ?? "",
-            savedOk: true,
+            ...stPrev,
+            presentes: presentesDoc,
+            cuotaEquipo: cuotaDoc,
+            montoEntregado: montoDoc,
+            cambioEntregado: Number(d.pago?.cambioEntregado ?? stPrev?.cambioEntregado ?? 0),
+            folio: d.pago?.folio ?? stPrev?.folio ?? "",
+            docPagado: !!d.pago?.pagado,   // 👈 bandera directa desde BD
+            savedOk: d.pago?.pagado === true || stPrev?.savedOk || false,
           }
         })
+
         return next
       })
     })
@@ -490,7 +531,6 @@ export default function Asistencias() {
     const st = ui[id]
     if (!st) return 0
     if (!requierePago) return 0
-    // como no hay cambio en UI, neto = montoEntregado
     return Math.max(0, Number(st.montoEntregado || 0) - Number(st.cambioEntregado || 0))
   }
 
@@ -540,7 +580,7 @@ export default function Asistencias() {
           institucion: eq.institucion,
         },
         presentes: st.presentes,
-        cuota,                         // por defecto 100, o lo que tenga el equipo
+        cuota,
         folio: st.folio,
         metodo: "Efectivo",
       })
@@ -565,11 +605,12 @@ export default function Asistencias() {
   const exportarExcel = async () => {
     const rows = equiposFiltrados.map((eq) => {
       const st = ui[eq.id]
-      const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
-      const esperado = esperadoEquipo(eq.id)
+      const esp = esperadoEquipo(eq.id)
       const neto = netoEquipo(eq.id)
-      const faltante = faltanteEquipo(eq.id)
-      const pagado = requierePago ? (faltante === 0 && esperado > 0) : true
+      const fal = faltanteEquipo(eq.id)
+
+      // ✅ si Firestore dice pagado, respétalo; si no, usa cálculo local
+      const pagado = st?.docPagado === true ? true : (requierePago ? (fal === 0 && esp > 0) : true)
 
       return {
         Equipo: eq.nombreEquipo,
@@ -579,8 +620,7 @@ export default function Asistencias() {
         "Presentes (#)": st?.presentes.length || 0,
         "Cuota (MXN)": requierePago ? (st?.cuotaEquipo ?? 0) : 0,
         "Recibido (MXN)": requierePago ? (st?.montoEntregado ?? 0) : 0,
-        // Se omitió "Cambio (MXN)" porque ya no se usa en UI
-        "Neto (MXN)": requierePago ? neto : 0,
+        "Neto (MXN)": requierePago ? neto : 0, // 👈 FIX: antes usabas una variable inexistente
         "Pagado": pagado ? "Sí" : "No",
         "Folio/Nota": st?.folio || "",
       }
@@ -745,9 +785,10 @@ export default function Asistencias() {
             const st = ui[eq.id]
             const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
             const esp = esperadoEquipo(eq.id)
-            const cob = cobradoEquipo(eq.id)
             const fal = faltanteEquipo(eq.id)
-            const pagado = requierePago ? (fal === 0 && esp > 0) : true
+
+            // ⚠️ si el doc venía pagado, respétalo visualmente
+            const pagado = st?.docPagado === true ? true : (requierePago ? (fal === 0 && esp > 0) : true)
 
             return (
               <Card key={eq.id} className="p-4 border-gray-100 hover:shadow-lg transition">
@@ -798,7 +839,7 @@ export default function Asistencias() {
                       </div>
                     </details>
 
-                    {/* Pago compacto (sin "Cambio") */}
+                    {/* Pago compacto */}
                     {requierePago ? (
                       <div className="mt-3 rounded-lg border bg-white p-3">
                         <div className="grid grid-cols-2 gap-2">
@@ -828,7 +869,7 @@ export default function Asistencias() {
 
                         <div className="mt-2 text-sm flex flex-wrap gap-2">
                           <span className={`px-2 py-0.5 rounded ${pagado ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-                            {pagado ? "Pagado" : `Pendiente: $${fal.toFixed(2)}`}
+                            {pagado ? "Pagado" : `Pendiente: $${faltanteEquipo(eq.id).toFixed(2)}`}
                           </span>
                           <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800">
                             Recibido: ${Number(st?.montoEntregado ?? 0).toFixed(2)}

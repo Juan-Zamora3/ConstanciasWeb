@@ -5,11 +5,9 @@ import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
 import { Link, useNavigate } from "react-router-dom"
 
-// src/pages/Concursos.tsx (encabezado de imports)
-import ModalEquipos, {  type Equipo as EquipoModal } from "../components/ModalEquipos"
+// Modales / iconos
+import ModalEquipos, { type Equipo as EquipoModal } from "../components/ModalEquipos"
 import { Pencil, Layers, FileText, UserPlus, HandCoins, Trash2 } from "lucide-react"
-
-
 
 // Firebase
 import { db, storage } from "../servicios/firebaseConfig"
@@ -49,8 +47,6 @@ export type Concurso = {
   tipoCurso?: "personal" | "grupos"
 }
 
-
-
 /* ---------------- Utilidades ---------------- */
 const toISO = (v: unknown): string => {
   try {
@@ -73,7 +69,7 @@ const safeEstado = (v: unknown): EstadoConcurso => {
   return "Activo"
 }
 
-/* ---------------- UI helpers ---------------- */
+/* ---------- UI helpers ---------- */
 const neoSurface = [
   "relative rounded-2xl",
   "bg-white",
@@ -91,7 +87,6 @@ const neoInset = [
   "shadow-inner shadow-black/10",
 ].join(" ")
 
-/** Bordes reforzados solo para el modal */
 const modalSurface = `${neoSurface} ring-slate-200`
 const modalInset   = `${neoInset}`
 
@@ -122,7 +117,7 @@ function Chip({
   return <span className={map[tone]}>{children}</span>
 }
 
-/* Barra de progreso */
+/* Barra de progreso inferior */
 function BarraProgreso({ actual, total }: { actual: number; total: number }) {
   const pct = Math.min(100, Math.round((actual / Math.max(1, total)) * 100))
   return (
@@ -178,6 +173,32 @@ function IconBtn({
   )
 }
 
+/* ---------- Helpers de participantes (nivel superior) ---------- */
+/** Cuenta participantes de una respuesta: integrantes + (1 si hay líder) o usa "cantidadParticipantes" si existe */
+function contarParticipantesRespuesta(d: any): number {
+  const preset = (d?.preset || {}) as any
+  const integrantes = Array.isArray(preset.integrantes)
+    ? preset.integrantes.filter(Boolean)
+    : Array.isArray(d?.integrantes)
+      ? (d.integrantes as any[]).filter(Boolean)
+      : []
+  const lider = (preset.nombreLider || d?.nombreLider || "").toString().trim()
+  const cantExpl = Number(d?.cantidadParticipantes ?? preset?.cantidadParticipantes)
+  if (!isNaN(cantExpl) && cantExpl > 0) return cantExpl
+  return integrantes.length + (lider ? 1 : 0)
+}
+
+/** Suma participantes de TODAS las encuestas de un curso */
+async function calcularParticipantesCurso(cursoId: string): Promise<number> {
+  let total = 0
+  const qEnc = query(collection(db, "encuestas"), where("cursoId", "==", cursoId))
+  const encSnap = await getDocs(qEnc)
+  for (const encDoc of encSnap.docs) {
+    const respSnap = await getDocs(collection(fsDoc(db, "encuestas", encDoc.id), "respuestas"))
+    respSnap.forEach((r) => { total += contarParticipantesRespuesta(r.data() || {}) })
+  }
+  return total
+}
 
 /* ---------------- Modal EDITAR ---------------- */
 function EditCursoModal({
@@ -205,15 +226,16 @@ function EditCursoModal({
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | undefined>(undefined)
   const [jumping, setJumping] = useState(false)
-  //modal//
-const MODAL_UI = {
-  maxW: "max-w-[1280px]",   // ancho total del modal (ej: "max-w-6xl", "max-w-[1320px]")
-  maxH: "max-h-[82vh]",     // alto del área con scroll
-  overlay: "bg-tecnm-azul/15",  // tinte del fondo (sube/baja opacidad)
-  ring: "ring-tecnm-azul/20",   // color del borde exterior
-  headBorder: "border-tecnm-azul/20",
-  headBg: "bg-white/90",        // glass en header
-}
+
+  const MODAL_UI = {
+    maxW: "max-w-[1280px]",
+    maxH: "max-h-[82vh]",
+    overlay: "bg-tecnm-azul/15",
+    ring: "ring-tecnm-azul/20",
+    headBorder: "border-tecnm-azul/20",
+    headBg: "bg-white/90",
+  }
+
   // generar link
   const [genLoading, setGenLoading] = useState(false)
   const [linkPublico, setLinkPublico] = useState("")
@@ -277,7 +299,7 @@ const MODAL_UI = {
           await updateDoc(docRef, { portadaUrl })
         }
 
-        onSaved({}) // actualiza lista
+        onSaved({})
         onClose()
         return
       }
@@ -382,7 +404,7 @@ const MODAL_UI = {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-          className={`fixed inset-0 z-50 ${MODAL_UI.overlay} backdrop-blur-sm`}
+        className={`fixed inset-0 z-50 bg-tecnm-azul/15 backdrop-blur-sm`}
         onClick={onClose}
       />
       <motion.div
@@ -393,7 +415,7 @@ const MODAL_UI = {
         className="fixed inset-0 z-50 grid place-items-center p-4"
       >
         <div
-          className={`${modalSurface} w-full max-w-3xl overflow-hidden`}
+          className={`${modalSurface} w/full max-w-3xl overflow-hidden`}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
@@ -594,9 +616,6 @@ const MODAL_UI = {
   )
 }
 
-
-
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
@@ -616,19 +635,18 @@ function Info({ label, value }: { label: string; value?: string }) {
 }
 
 /* ---------------- Tarjeta ---------------- */
-/* ---------------- Tarjeta ---------------- */
 function TarjetaConcurso({
   c,
   onOpenEquipos,
   onEdit,
   onAddCoord,
-  onDelete, // ⬅️ NUEVO
+  onDelete,
 }: {
   c: Concurso
   onOpenEquipos: (c: Concurso) => void
   onEdit: (c: Concurso) => void
   onAddCoord: (c: Concurso) => void
-  onDelete?: (c: Concurso) => void // ⬅️ NUEVO (opcional para no romper otros usos)
+  onDelete?: (c: Concurso) => void
 }) {
   const navigate = useNavigate()
   const tone: "azul" | "gris" | "verde" =
@@ -641,19 +659,24 @@ function TarjetaConcurso({
       ? "from-emerald-500 to-emerald-700"
       : "from-slate-400 to-slate-600"
 
+  const pct = Math.min(100, Math.round((c.participantesActual / Math.max(1, c.participantesMax)) * 100))
+
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25 }}
-    >
+    <motion.div layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
       <Card
         className={`group relative p-0 overflow-hidden cursor-pointer border-0 ${neoSurface} transform-gpu`}
         onClick={() => onOpenEquipos(c)}
       >
         {/* acento lateral */}
         <div className={`absolute inset-y-0 left-0 w-1.5 bg-gradient-to-b ${accent}`} />
+
+        {/* ✅ barra superior de progreso */}
+        <div className="absolute top-0 left-0 right-0 h-1.5 bg-black/5">
+          <div
+            className={`h-full bg-gradient-to-r ${accent} transition-all duration-500`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
 
         {/* Portada */}
         {c.portadaUrl ? (
@@ -694,61 +717,37 @@ function TarjetaConcurso({
           </div>
 
           {/* Acciones */}
-          <div
-            className="flex flex-wrap gap-2"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
             <IconBtn title="Editar" variant="primary" onClick={() => onEdit(c)}>
               <Pencil size={18} />
             </IconBtn>
-            <IconBtn
-              title="Plantillas"
-              onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}
-            >
+            <IconBtn title="Plantillas" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
               <Layers size={18} />
             </IconBtn>
-            <IconBtn
-              title="Constancias"
-              onClick={() => navigate(`/constancias?concursoId=${c.id}`)}
-            >
+            <IconBtn title="Constancias" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
               <FileText size={18} />
             </IconBtn>
             <IconBtn title="Añadir coordinador" onClick={() => onAddCoord(c)}>
               <UserPlus size={18} />
             </IconBtn>
-            <IconBtn
-              title="Asistencia & Pago"
-              variant="primary"
-              onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}
-            >
+            <IconBtn title="Asistencia & Pago" variant="primary" onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}>
               <HandCoins size={18} />
             </IconBtn>
-
-            {/* Eliminar */}
             {onDelete && (
-              <IconBtn
-                title="Eliminar"
-                variant="danger"
-                onClick={() => onDelete(c)}
-              >
+              <IconBtn title="Eliminar" variant="danger" onClick={() => onDelete(c)}>
                 <Trash2 size={18} />
               </IconBtn>
             )}
           </div>
 
           <div className="pt-1">
-            <BarraProgreso
-              actual={c.participantesActual}
-              total={c.participantesMax}
-            />
+            <BarraProgreso actual={c.participantesActual} total={c.participantesMax} />
           </div>
         </div>
       </Card>
     </motion.div>
   )
 }
-
-
 
 /* ------------------------------ Página ------------------------------ */
 export default function Concursos() {
@@ -801,7 +800,7 @@ export default function Concursos() {
       const qy = query(refCursos, orderBy("fechaInicio", "desc"))
       const unsub = onSnapshot(
         qy,
-        (snap) => {
+        async (snap) => {
           const rows: Concurso[] = snap.docs.map((d) => {
             const data: DocumentData = d.data() || {}
             const nombre = (data.nombre || data.titulo || data.curso || d.id) as string
@@ -832,7 +831,25 @@ export default function Concursos() {
               participantesActual, participantesMax, portadaUrl, instructor, descripcion, tipoCurso,
             }
           })
-          setConcursos(rows); setCargando(false); setError(null)
+
+          setConcursos(rows)
+          setCargando(false)
+          setError(null)
+
+          // 🔄 Recalcular participantes reales desde encuestas
+          try {
+            const pares = await Promise.all(
+              rows.map(async (c) => [c.id, await calcularParticipantesCurso(c.id)] as const)
+            )
+            setConcursos((prev) =>
+              prev.map((c) => {
+                const hit = pares.find(([id]) => id === c.id)
+                return hit ? { ...c, participantesActual: hit[1] } : c
+              })
+            )
+          } catch (aggErr) {
+            console.error("No se pudieron calcular participantes:", aggErr)
+          }
         },
         (err) => { console.error(err); setError("Error al cargar concursos."); setCargando(false) }
       )
@@ -905,27 +922,28 @@ export default function Concursos() {
       }
       equiposAcumulados.sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || ""))
       setEquipos(equiposAcumulados)
-    } catch (e) { console.error(e); setEquiposError("No fue posible cargar los equipos de este concurso.") }
-    finally { setEquiposLoading(false) }
+    } catch (e) {
+      console.error(e)
+      setEquiposError("No fue posible cargar los equipos de este concurso.")
+    } finally {
+      setEquiposLoading(false)
+    }
   }
 
   /* ----------- Abrir modal EDITAR ----------- */
   const abrirEditar = (c: Concurso) => { setEditCurso(c); setEditOpen(true) }
   const eliminarConcurso = async (c: Concurso) => {
-  const ok = confirm(`¿Eliminar el curso "${c.nombre}"? Esta acción no se puede deshacer.`)
-  if (!ok) return
-  try {
-    // Optimista: quita el card ya
-    setConcursos(prev => prev.filter(x => x.id !== c.id))
-    // Borra en Firestore
-    await deleteDoc(fsDoc(db, "Cursos", c.id))
-  } catch (e) {
-    console.error(e)
-    alert("No se pudo eliminar el curso.")
-    // Revertir si hubo error (opcional)
-    setConcursos(prev => [...prev, c])
+    const ok = confirm(`¿Eliminar el curso "${c.nombre}"? Esta acción no se puede deshacer.`)
+    if (!ok) return
+    try {
+      setConcursos(prev => prev.filter(x => x.id !== c.id)) // optimista
+      await deleteDoc(fsDoc(db, "Cursos", c.id))
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo eliminar el curso.")
+      setConcursos(prev => [...prev, c]) // revertir
+    }
   }
-}
 
   const onSavedPatch = (patch: Partial<Concurso>) => {
     setConcursos((prev) => prev.map((x) => (x.id === (editCurso?.id || "") ? { ...x, ...patch } : x)))
@@ -953,25 +971,23 @@ export default function Concursos() {
 
       {/* Barra de acciones */}
       <Card
-  className={`p-4 border-0 ${neoSurface} overflow-visible
-              sticky top-2 z-30 bg-white/90 backdrop-blur
-              supports-[backdrop-filter]:bg-white/70`}
->
-
+        className={`p-4 border-0 ${neoSurface} overflow-visible
+                    sticky top-2 z-30 bg-white/90 backdrop-blur
+                    supports-[backdrop-filter]:bg-white/70`}
+      >
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2 overflow-x-auto overflow-y-visible py-1 -mx-1 px-1">
             {["Todos", "Activo", "Próximo", "Finalizado"].map((t) => (
               <button
-  key={t}
-  onClick={() => setTab(t as any)}
-  className={`${pill} px-4 py-1.5 text-sm transition ring-1
-              ${tab === t
-                ? "bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 text-white ring-tecnm-azul/40 shadow-md"
-                : "text-slate-700 ring-slate-200 hover:bg-slate-50"}`}
->
-  {t}
-</button>
-
+                key={t}
+                onClick={() => setTab(t as any)}
+                className={`${pill} px-4 py-1.5 text-sm transition ring-1
+                ${tab === t
+                  ? "bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 text-white ring-tecnm-azul/40 shadow-md"
+                  : "text-slate-700 ring-slate-200 hover:bg-slate-50"}`}
+              >
+                {t}
+              </button>
             ))}
           </div>
 
@@ -1015,7 +1031,7 @@ export default function Concursos() {
                 onOpenEquipos={abrirEquipos}
                 onEdit={abrirEditar}
                 onAddCoord={(cc) => { setCursoCoord(cc); setAddCoordOpen(true) }}
-                onDelete={eliminarConcurso}     // ⬅️ aquí
+                onDelete={eliminarConcurso}
               />
             ))}
           </div>

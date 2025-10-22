@@ -168,19 +168,57 @@ export default function ModalEquipos({
     }, 0)
   }, [filtrados])
 
-  const togglePagado = async (eq: Equipo, val: boolean) => {
+const togglePagado = async (eq: Equipo, val: boolean) => {
   if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
+  const equipoDocId = eq._respId || eq.id
+
   try {
-    // 1) Si se marca como pagado, registra el pago en la subcolección de asistencias
     if (val) {
       if (!concurso?.id) return alert("Falta el cursoId para registrar el pago.")
       const miembros = mergeWithLeaderNames(eq.integrantes, eq.nombreLider)
 
+      // 1) Fallback inmediato en Asistencias (por si pagarEquipo falla o se demora)
+      await setDoc(
+        fsDoc(db, "Cursos", concurso.id, "asistencias", equipoDocId),
+        {
+          cursoId: concurso.id,
+          cursoNombre: concurso?.nombre || "Curso",
+          equipoId: equipoDocId,
+          nombreEquipo: eq.nombreEquipo,
+          updatedAt: serverTimestamp(),
+          asistencia: {
+            presentes: miembros,
+            totalPresentes: miembros.length,
+            integrantesTotales: miembros.length,
+          },
+          pago: {
+            requierePago: true,
+            cuotaEquipo: 100,           // 👈 ajusta si tu cuota es otra
+            totalEsperado: 100,
+            montoEntregado: 100,
+            cambioEntregado: 0,
+            netoCobrado: 100,
+            aplicadoAEsperado: 100,
+            faltante: 0,
+            metodo: "Efectivo",
+            folio: null,
+            pagado: true,
+            fechaPago: serverTimestamp(),
+          },
+          categoria: eq.categoria || null,
+          nombreLider: eq.nombreLider || null,
+          contactoEquipo: eq.contactoEquipo || null,
+          institucion: eq.institucion || null,
+        },
+        { merge: true }
+      )
+
+      // 2) Registro “bonito” usando tu helper (deja todo coherente)
       await pagarEquipo({
         cursoId: concurso.id,
         cursoNombre: concurso?.nombre || "Curso",
         equipo: {
-          id: eq.id,
+          id: equipoDocId,
           nombreEquipo: eq.nombreEquipo,
           integrantes: miembros,
           nombreLider: eq.nombreLider,
@@ -188,25 +226,34 @@ export default function ModalEquipos({
           contactoEquipo: eq.contactoEquipo,
           institucion: eq.institucion,
         },
-        presentes: miembros, // asegura que haya asistencia>0 para calcular esperado
-        cuota: 100,          // 👈 cambia aquí si tu cuota es otra
+        presentes: miembros,
+        cuota: 100,                      // 👈 ajusta si tu cuota es otra
         metodo: "Efectivo",
       })
     } else {
-      // 2) Al desmarcar, refleja pagado:false en asistencias (opcional, pero útil)
+      // Desmarcar: deja explícitamente pagado:false y limpia importes
       if (concurso?.id) {
         await setDoc(
-          fsDoc(db, "Cursos", concurso.id, "asistencias", eq.id),
-          { pago: { pagado: false } },
+          fsDoc(db, "Cursos", concurso.id, "asistencias", equipoDocId),
+          {
+            pago: {
+              pagado: false,
+              montoEntregado: 0,
+              netoCobrado: 0,
+              aplicadoAEsperado: 0,
+              cambioEntregado: 0,
+              faltante: 0,
+            },
+          },
           { merge: true }
         )
       }
     }
 
-    // 3) Siempre sincroniza el campo pagado en la respuesta de encuestas
+    // Refleja en la respuesta de la encuesta
     await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
 
-    // 4) Refresca UI local
+    // Actualiza UI local
     setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
     setDetailEq((curr) => (curr && curr._respId === eq._respId ? { ...curr, pagado: val } : curr))
   } catch (e) {
@@ -214,6 +261,7 @@ export default function ModalEquipos({
     alert("No se pudo actualizar el estado de pago.")
   }
 }
+
 
 
   const eliminarEquipo = async (eq: Equipo) => {
@@ -229,72 +277,220 @@ export default function ModalEquipos({
   }
 
   const guardarEdicion = async () => {
-    if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
-    try {
-      setSavingEdit(true)
-      const patch: any = {
-        preset: {
-          nombreEquipo: detailEq.nombreEquipo || "",
-          nombreLider: detailEq.nombreLider || "",
-          contactoEquipo: detailEq.contactoEquipo || "",
-          categoria: detailEq.categoria || "",
-          integrantes: Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
-        },
-        custom: {
-          p1: detailEq.maestroAsesor || "",
-          p2: detailEq.institucion || "",
-          p3: detailEq.telefono || "",
-          p4: detailEq.escolaridad || "",
-        },
-        pagado: !!detailEq.pagado,
+  if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
+  try {
+    setSavingEdit(true)
+
+    const patch: any = {
+      preset: {
+        nombreEquipo: detailEq.nombreEquipo || "",
+        nombreLider: detailEq.nombreLider || "",
+        contactoEquipo: detailEq.contactoEquipo || "",
+        categoria: detailEq.categoria || "",
+        integrantes: Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
+      },
+      custom: {
+        p1: detailEq.maestroAsesor || "",
+        p2: detailEq.institucion || "",
+        p3: detailEq.telefono || "",
+        p4: detailEq.escolaridad || "",
+      },
+      pagado: !!detailEq.pagado,
+    }
+
+    const encDocRef = fsDoc(
+      db,
+      "encuestas",
+      detailEq._encuestaId,
+      "respuestas",
+      detailEq._respId
+    )
+
+    // 1) Guardar edición en la respuesta
+    await updateDoc(encDocRef, patch)
+
+    // 2) Sincronizar "pagado" con Asistencias
+    if (patch.pagado) {
+      if (!concurso?.id) {
+        alert("Se marcó como pagado, pero falta cursoId para reflejarlo en Asistencias.")
+      } else {
+        const miembros = mergeWithLeaderNames(
+          patch.preset.integrantes,
+          patch.preset.nombreLider
+        )
+        try {
+          await pagarEquipo({
+            cursoId: concurso.id,
+            cursoNombre: concurso?.nombre || "Curso",
+            equipo: {
+              id: detailEq._respId, // usamos el id de la respuesta como id del equipo en asistencias
+              nombreEquipo: patch.preset.nombreEquipo,
+              integrantes: miembros,
+              nombreLider: patch.preset.nombreLider,
+              categoria: patch.preset.categoria,
+              contactoEquipo: patch.preset.contactoEquipo,
+              institucion: patch.custom.p2,
+            },
+            presentes: miembros, // asegura asistencia > 0
+            cuota: 100,          // ⚠️ ajusta si tu cuota real es otra
+            metodo: "Efectivo",
+          })
+        } catch (e) {
+          console.error(e)
+          // Revertir "pagado" si falló registrar el pago en Asistencias
+          await updateDoc(encDocRef, { pagado: false })
+          patch.pagado = false
+          alert("No se pudo registrar el pago en Asistencias. 'Pagado' fue revertido.")
+        }
       }
-      await updateDoc(fsDoc(db, "encuestas", detailEq._encuestaId, "respuestas", detailEq._respId), patch)
-      setLista((prev) => prev.map((x) => (x._respId === detailEq._respId ? { ...x, ...detailEq } : x)))
-      setIsEditing(false)
-      setSnapshotEq(detailEq)
-    } finally { setSavingEdit(false) }
+    } else {
+      // Desmarcado: reflejar en Asistencias que ya no está pagado
+      if (concurso?.id) {
+        await setDoc(
+          fsDoc(db, "Cursos", concurso.id, "asistencias", detailEq._respId),
+          { pago: { pagado: false } },
+          { merge: true }
+        )
+      }
+    }
+
+    // 3) Actualizar UI local
+    setLista((prev) =>
+      prev.map((x) =>
+        x._respId === detailEq._respId ? { ...x, ...detailEq, pagado: patch.pagado } : x
+      )
+    )
+    setIsEditing(false)
+    setSnapshotEq({ ...detailEq, pagado: patch.pagado })
+  } finally {
+    setSavingEdit(false)
   }
+}
+
 
   const cancelarEdicion = () => {
     if (snapshotEq) setDetailEq(snapshotEq)
     setIsEditing(false)
   }
 
-  const añadirRapido = async () => {
-    if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
-    try {
-      setSavingAdd(true)
-      const integrantes = aIntegrantes.split(",").map((s) => s.trim()).filter(Boolean)
-      const payload = {
-        createdAt: serverTimestamp(),
-        submittedAt: serverTimestamp(),
-        pagado: aPagado,
-        preset: {
-          nombreEquipo: aNombreEquipo.trim() || "Equipo",
-          nombreLider: aNombreLider.trim() || "",
-          contactoEquipo: aEmail.trim() || "",
-          categoria: aCategoria.trim() || "",
-          integrantes
-        },
-        custom: {
-          p1: aAsesor.trim() || "",
-          p2: aInstitucion.trim() || "",
-          p3: aTelefono.trim() || "",
-          p4: aEscolaridad.trim() || ""
-        },
+ const añadirRapido = async () => {
+  if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
+  try {
+    setSavingAdd(true)
+
+    // Parseo de integrantes
+    const integrantes = aIntegrantes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+
+    // Documento base en respuestas de la encuesta
+    const payload = {
+      createdAt: serverTimestamp(),
+      submittedAt: serverTimestamp(),
+      pagado: aPagado,
+      preset: {
+        nombreEquipo: aNombreEquipo.trim() || "Equipo",
+        nombreLider: aNombreLider.trim() || "",
+        contactoEquipo: aEmail.trim() || "",
+        categoria: aCategoria.trim() || "",
+        integrantes,
+      },
+      custom: {
+        p1: aAsesor.trim() || "",
+        p2: aInstitucion.trim() || "",
+        p3: aTelefono.trim() || "",
+        p4: aEscolaridad.trim() || "",
+      },
+    }
+
+    // 1) Guardar respuesta
+    const refDoc = await addDoc(
+      collection(db, "encuestas", encuestaDestino, "respuestas"),
+      payload
+    )
+
+    // 2) Insertar en la lista local
+    const nuevo: Equipo = {
+      id: refDoc.id,
+      _respId: refDoc.id,
+      _encuestaId: encuestaDestino,
+      pagado: aPagado,
+      nombreEquipo: payload.preset.nombreEquipo,
+      nombreLider: payload.preset.nombreLider,
+      integrantes,
+      contactoEquipo: payload.preset.contactoEquipo,
+      categoria: payload.preset.categoria,
+      submittedAt: new Date().toISOString(),
+      maestroAsesor: payload.custom.p1,
+      institucion: payload.custom.p2,
+      telefono: payload.custom.p3,
+      escolaridad: payload.custom.p4,
+    }
+    setLista((prev) => [nuevo, ...prev])
+
+    // 3) Si se marcó como pagado, reflejar también en Asistencias
+    if (aPagado) {
+      if (!concurso?.id) {
+        alert(
+          "Se marcó como pagado, pero no tengo cursoId para reflejarlo en Asistencias."
+        )
+      } else {
+        const miembros = mergeWithLeaderNames(integrantes, aNombreLider)
+        try {
+          await pagarEquipo({
+            cursoId: concurso.id,
+            cursoNombre: concurso?.nombre || "Curso",
+            equipo: {
+              id: refDoc.id, // usamos el id de la respuesta como id en asistencias
+              nombreEquipo: payload.preset.nombreEquipo,
+              integrantes: miembros,
+              nombreLider: payload.preset.nombreLider,
+              categoria: payload.preset.categoria,
+              contactoEquipo: payload.preset.contactoEquipo,
+              institucion: payload.custom.p2,
+            },
+            presentes: miembros, // asegura asistencia > 0
+            cuota: 100,          // 👈 ajusta si tu cuota es otra
+            metodo: "Efectivo",
+          })
+        } catch (e) {
+          console.error(e)
+          // Si falló registrar el pago, revertimos a "pendiente" en la respuesta y en UI
+          await updateDoc(
+            fsDoc(db, "encuestas", encuestaDestino, "respuestas", refDoc.id),
+            { pagado: false }
+          )
+          setLista((prev) =>
+            prev.map((x) => (x._respId === refDoc.id ? { ...x, pagado: false } : x))
+          )
+          alert(
+            "El equipo se añadió, pero no se pudo registrar el pago en Asistencias. Quedó como Pendiente."
+          )
+        }
       }
-      const refDoc = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
-      const nuevo: Equipo = {
-        id: refDoc.id, _respId: refDoc.id, _encuestaId: encuestaDestino, pagado: aPagado,
-        nombreEquipo: payload.preset.nombreEquipo, nombreLider: payload.preset.nombreLider, integrantes,
-        contactoEquipo: payload.preset.contactoEquipo, categoria: payload.preset.categoria,
-        submittedAt: new Date().toISOString(), maestroAsesor: payload.custom.p1, institucion: payload.custom.p2, telefono: payload.custom.p3, escolaridad: payload.custom.p4,
-      }
-      setLista((prev) => [nuevo, ...prev])
-      setANombreEquipo(""); setANombreLider(""); setAEmail(""); setACategoria(""); setAIntegrantes(""); setAAsesor(""); setAInstitucion(""); setATelefono(""); setAEscolaridad(""); setAPagado(false)
-      setAddingOpen(false)
-    } finally { setSavingAdd(false) }
+    }
+
+    // 4) Reset de campos y cerrar bloque
+    setANombreEquipo("")
+    setANombreLider("")
+    setAEmail("")
+    setACategoria("")
+    setAIntegrantes("")
+    setAAsesor("")
+    setAInstitucion("")
+    setATelefono("")
+    setAEscolaridad("")
+    setAPagado(false)
+    setAddingOpen(false)
+  } catch (e) {
+    console.error(e)
+    alert("No se pudo añadir el equipo.")
+  } finally {
+    setSavingAdd(false)
   }
+}
+
 
   useEffect(() => {
   const onKey = (e: KeyboardEvent) => {
