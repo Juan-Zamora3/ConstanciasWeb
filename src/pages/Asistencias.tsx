@@ -1,5 +1,5 @@
 // src/pages/Asistencias.tsx
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Card } from "../components/ui/Card"
 import Button from "../components/ui/Button"
@@ -57,7 +57,7 @@ type EquipoUIState = {
   saving?: boolean
   savedOk?: boolean
   error?: string | null
-  /** ← viene directo del doc de Firestore (cuando lo marcaron pagado en otro lado) */
+  /** bandera que viene directamente del doc de Firestore */
   docPagado?: boolean
 }
 
@@ -207,7 +207,7 @@ async function guardarAsistenciaPagoEquipo(
     updatedAt: serverTimestamp(),
 
     asistencia: {
-      presentes: asistencia.presentes || [],
+      presentes: [...(asistencia.presentes || [])],
       totalPresentes: asistencia.presentes?.length || 0,
       integrantesTotales: miembros.length,
     },
@@ -239,7 +239,7 @@ async function guardarAsistenciaPagoEquipo(
   return { totalEsperado, netoCobrado, aplicadoAEsperado, faltante, pagado }
 }
 
-/** ========= Export principal: pagar (cobra la cuota completa, recibido=cuota, cambio=0) ========= */
+/** ========= Export principal: pagar (cobra la cuota completa) ========= */
 export type PagarEquipoInput = {
   cursoId: string
   cursoNombre: string
@@ -253,7 +253,7 @@ export type PagarEquipoInput = {
     institucion?: string
   }
   presentes: string[]
-  cuota?: number        // por defecto 100
+  cuota?: number
   folio?: string
   metodo?: "Efectivo" | "Tarjeta" | "Transferencia" | "—"
 }
@@ -268,8 +268,8 @@ export async function pagarEquipo(input: PagarEquipoInput) {
     asistencia: { presentes: input.presentes },
     pago: {
       cuotaEquipo: cuota,
-      montoEntregado: cuota, // 👈 recibido = cuota
-      cambioEntregado: 0,    // 👈 sin cambio
+      montoEntregado: cuota,
+      cambioEntregado: 0,
       folio: input.folio,
       metodo: input.metodo ?? "Efectivo",
     },
@@ -298,6 +298,9 @@ export default function Asistencias() {
   const [filtroCategoria, setFiltroCategoria] = useState<string>("Todas")
   const [buscarEquipo, setBuscarEquipo] = useState<string>("")
   const [cuotaGlobal, setCuotaGlobal] = useState<number>(100)
+
+  // timers para autosave de asistencia
+  const saveTimers = useRef<Record<string, any>>({})
 
   /* ----------- 1) Cargar datos del curso ----------- */
   useEffect(() => {
@@ -388,11 +391,12 @@ export default function Asistencias() {
         }
         equiposAcumulados.sort((a, b) => (b.submittedAt || "").localeCompare(a.submittedAt || ""))
 
+        // Estado inicial por equipo
         const initialUi: Record<string, EquipoUIState> = {}
         for (const eq of equiposAcumulados) {
           const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
           initialUi[eq.id] = {
-            presentes: miembros,
+            presentes: [...miembros],   // **clon** para no compartir referencias
             cuotaEquipo: 100,
             montoEntregado: 0,
             cambioEntregado: 0,
@@ -402,7 +406,16 @@ export default function Asistencias() {
         }
 
         setEquipos(equiposAcumulados)
-        setUi(initialUi)
+
+        // **CLAVE**: fusiona con lo que ya pudo haber llegado del onSnapshot
+        setUi((prev) => {
+          const out: Record<string, EquipoUIState> = {}
+          for (const id of Object.keys(initialUi)) {
+            out[id] = { ...initialUi[id], ...(prev[id] || {}) } // snapshot (prev) gana
+          }
+          return out
+        })
+
         setCargando(false)
       } catch (e) {
         console.error(e)
@@ -425,13 +438,11 @@ export default function Asistencias() {
         snap.forEach((doc) => {
           const d: any = doc.data() || {}
 
-          // Usar SIEMPRE el id real; nada de split("_")
           const equipoId = String(d.equipoId || doc.id || "")
           if (!equipoId) return
 
           const stPrev = next[equipoId] || {}
 
-          // Cuota: prioriza la del doc; si no viene, usa totalEsperado; si no, conserva la de UI
           const cuotaDoc = Number(
             d.pago?.cuotaEquipo ??
             d.pago?.totalEsperado ??
@@ -439,44 +450,43 @@ export default function Asistencias() {
             0
           )
 
-          // Presentes
+          // Presentes desde BD (clonados)
           let presentesDoc: string[] = Array.isArray(d.asistencia?.presentes)
-            ? d.asistencia.presentes
-            : (stPrev?.presentes || [])
+            ? [...d.asistencia.presentes]
+            : (Array.isArray(stPrev?.presentes) ? [...stPrev.presentes] : [])
 
-          if ((d.pago?.pagado === true) && (!presentesDoc || presentesDoc.length === 0)) {
-            // Si alguien marcó pagado sin guardar asistencia explícita, no dejes esperado=0
-            presentesDoc = stPrev?.presentes || []
+          // Si venía pagado y no hay presentes en doc, conserva los que ya había en UI
+          if ((d.pago?.pagado === true) && presentesDoc.length === 0) {
+            presentesDoc = Array.isArray(stPrev?.presentes) ? [...stPrev.presentes] : []
           }
 
-          // Monto recibido
+          // Recibido
           let montoDoc = Number(
             d.pago?.montoEntregado ??
             stPrev?.montoEntregado ??
             0
           )
-
-          // Si el doc dice "pagado", fuerza recibido >= esperado
           if (d.pago?.pagado === true) {
             const esperadoDoc = Number(d.pago?.totalEsperado ?? cuotaDoc)
             if (montoDoc < esperadoDoc) montoDoc = esperadoDoc
           }
 
           next[equipoId] = {
-            ...stPrev,
             presentes: presentesDoc,
             cuotaEquipo: cuotaDoc,
             montoEntregado: montoDoc,
             cambioEntregado: Number(d.pago?.cambioEntregado ?? stPrev?.cambioEntregado ?? 0),
             folio: d.pago?.folio ?? stPrev?.folio ?? "",
-            docPagado: !!d.pago?.pagado,   // 👈 bandera directa desde BD
+            docPagado: !!d.pago?.pagado,
             savedOk: d.pago?.pagado === true || stPrev?.savedOk || false,
+            error: null,
           }
         })
 
         return next
       })
     })
+
     return () => unsub()
   }, [cursoId])
 
@@ -498,25 +508,60 @@ export default function Asistencias() {
     })
   }, [equipos, filtroCategoria, buscarEquipo])
 
-  /* ----------- Dinero ----------- */
+  /* ----------- Helpers de estado/dinero ----------- */
 
   const actualizarUI = (id: string, patch: Partial<EquipoUIState>) =>
     setUi((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
 
-  const toggleIntegrante = (id: string, nombre: string) => {
-    const st = ui[id]
+  // autosave de asistencia (debounce por equipo)
+  const autosaveAsistencia = (eq: Equipo) => {
+    const id = eq.id
+    if (saveTimers.current[id]) clearTimeout(saveTimers.current[id])
+    saveTimers.current[id] = setTimeout(async () => {
+      try {
+        const st = ui[id]
+        if (!st) return
+        const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
+        await setDoc(
+          fsDoc(db, "Cursos", cursoId, "asistencias", id),
+          {
+            cursoId,
+            cursoNombre: curso?.nombre || "",
+            equipoId: id,
+            nombreEquipo: eq.nombreEquipo,
+            updatedAt: serverTimestamp(),
+            asistencia: {
+              presentes: [...(st.presentes || [])],
+              totalPresentes: st.presentes?.length || 0,
+              integrantesTotales: miembros.length,
+            },
+          },
+          { merge: true }
+        )
+      } catch (e) {
+        console.error("autosave asistencia", e)
+      }
+    }, 600)
+  }
+
+  const toggleIntegrante = (eq: Equipo, nombre: string) => {
+    const st = ui[eq.id]
     if (!st) return
     const ya = new Set(st.presentes)
     if (ya.has(nombre)) ya.delete(nombre)
     else ya.add(nombre)
-    actualizarUI(id, { presentes: Array.from(ya), savedOk: false })
+    const presentes = Array.from(ya)
+    actualizarUI(eq.id, { presentes, savedOk: false })
+    autosaveAsistencia(eq)
   }
 
-  const seleccionarTodos = (id: string, todos: string[]) => {
-    actualizarUI(id, { presentes: [...todos], savedOk: false })
+  const seleccionarTodos = (eq: Equipo, todos: string[]) => {
+    actualizarUI(eq.id, { presentes: [...todos], savedOk: false })
+    autosaveAsistencia(eq)
   }
-  const deseleccionarTodos = (id: string) => {
-    actualizarUI(id, { presentes: [], savedOk: false })
+  const deseleccionarTodos = (eq: Equipo) => {
+    actualizarUI(eq.id, { presentes: [], savedOk: false })
+    autosaveAsistencia(eq)
   }
 
   const esperadoEquipo = (id: string) => {
@@ -564,7 +609,6 @@ export default function Asistencias() {
       if (!st) return
       const cuota = Number(st.cuotaEquipo || 100)
 
-      // refleja inmediatamente en UI que se recibieron los $cuota y no hay cambio
       actualizarUI(eq.id, { saving: true, error: null, montoEntregado: cuota, cambioEntregado: 0 })
 
       await pagarEquipo({
@@ -609,7 +653,6 @@ export default function Asistencias() {
       const neto = netoEquipo(eq.id)
       const fal = faltanteEquipo(eq.id)
 
-      // ✅ si Firestore dice pagado, respétalo; si no, usa cálculo local
       const pagado = st?.docPagado === true ? true : (requierePago ? (fal === 0 && esp > 0) : true)
 
       return {
@@ -620,7 +663,7 @@ export default function Asistencias() {
         "Presentes (#)": st?.presentes.length || 0,
         "Cuota (MXN)": requierePago ? (st?.cuotaEquipo ?? 0) : 0,
         "Recibido (MXN)": requierePago ? (st?.montoEntregado ?? 0) : 0,
-        "Neto (MXN)": requierePago ? neto : 0, // 👈 FIX: antes usabas una variable inexistente
+        "Neto (MXN)": requierePago ? neto : 0,
         "Pagado": pagado ? "Sí" : "No",
         "Folio/Nota": st?.folio || "",
       }
@@ -681,245 +724,253 @@ export default function Asistencias() {
   if (error) return <Card className="p-8 text-sm text-red-600">{error}</Card>
   if (!curso) return <Card className="p-8 text-sm text-red-600">Curso no encontrado.</Card>
 
-  return (
-    <section className="space-y-5">
-      {/* Encabezado */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Asistencia & Caja</h1>
-          <p className="text-sm text-gray-600">
-            Curso: <span className="font-medium">{curso.nombre}</span> • {curso.sede} • {curso.categoria}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => navigate(-1)}>Volver</Button>
-        </div>
-      </div>
-
-      {/* Resumen + controles */}
-      <Card className="p-4">
-        <div className="flex flex-col gap-4">
-          <div className="grid gap-2 md:grid-cols-3">
-            <ResumePill label="Caja inicial" value={`$${resumen.cajaInicial.toFixed(2)}`} />
-            <ResumePill label="Caja" value={`$${resumen.caja.toFixed(2)}`} />
-            <ResumePill label="Total estimado" value={`$${resumen.totalEstimado.toFixed(2)}`} />
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={requierePago} onChange={(e)=>setRequierePago(e.target.checked)} />
-                Requiere pago
-              </label>
-              <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">
-                <span className="text-gray-600">Caja inicial (MXN)</span>
-                <input
-                  type="number"
-                  className="w-28 rounded-lg border px-2 py-1"
-                  min={0}
-                  step="1"
-                  value={cajaInicial}
-                  onChange={(e)=>setCajaInicial(Number(e.target.value || 0))}
-                />
-              </div>
-              {requierePago && (
-                <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">
-                  <span>Cuota global</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step="1"
-                    className="w-24 rounded-lg border px-2 py-1"
-                    value={cuotaGlobal}
-                    onChange={(e)=>setCuotaGlobal(Number(e.target.value || 0))}
-                  />
-                  <Button size="sm" variant="outline" onClick={()=>{
-                    setUi((prev)=>{
-                      const next={...prev}
-                      for (const id of Object.keys(next)) next[id] = { ...next[id], cuotaEquipo: Number(cuotaGlobal)||0, savedOk:false }
-                      return next
-                    })
-                  }}>Aplicar</Button>
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 md:justify-end">
-              <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 shadow-sm">
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                  <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
-                </svg>
-                <input
-                  value={buscarEquipo}
-                  onChange={(e)=>setBuscarEquipo(e.target.value)}
-                  placeholder="Buscar equipo, líder o institución…"
-                  className="w-64 outline-none text-sm"
-                />
-              </div>
-
-              <select
-                value={filtroCategoria}
-                onChange={(e)=>setFiltroCategoria(e.target.value)}
-                className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
-              >
-                {categorias.map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
-              </select>
-
-              <Button variant="outline" onClick={() => { setBuscarEquipo(""); setFiltroCategoria("Todas"); }}>
-                Limpiar
-              </Button>
-
-              <Button variant="outline" onClick={exportarExcel}>Exportar</Button>
-              <Button variant="solid" onClick={pagarMostrados}>Pagar mostrados</Button>
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* Lista de equipos */}
-      {equiposFiltrados.length === 0 ? (
-        <Card className="p-8 text-sm text-gray-600">No hay equipos que cumplan con el filtro.</Card>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {equiposFiltrados.map((eq) => {
-            const st = ui[eq.id]
-            const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
-            const esp = esperadoEquipo(eq.id)
-            const fal = faltanteEquipo(eq.id)
-
-            // ⚠️ si el doc venía pagado, respétalo visualmente
-            const pagado = st?.docPagado === true ? true : (requierePago ? (fal === 0 && esp > 0) : true)
-
-            return (
-              <Card key={eq.id} className="p-4 border-gray-100 hover:shadow-lg transition">
-                <div className="flex items-start gap-3">
-                  <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
-                    {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <h3 className="font-semibold truncate">{eq.nombreEquipo}</h3>
-                        <p className="text-xs text-gray-600">
-                          Líder: {eq.nombreLider || "—"} {eq.institucion ? `• ${eq.institucion}` : ""}
-                        </p>
-                      </div>
-                      {eq.categoria && (
-                        <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-700 shrink-0">{eq.categoria}</span>
-                      )}
-                    </div>
-
-                    {/* Asistencia plegable */}
-                    <details className="mt-3 rounded-lg border bg-gray-50">
-                      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium flex items-center justify-between">
-                        Asistencia <span className="text-xs text-gray-600">({st?.presentes.length || 0}/{miembros.length})</span>
-                      </summary>
-                      <div className="px-3 pb-3">
-                        <div className="flex gap-2 mb-2">
-                          <Button size="sm" variant="outline" onClick={() => seleccionarTodos(eq.id, miembros)}>Todos</Button>
-                          <Button size="sm" variant="outline" onClick={() => deseleccionarTodos(eq.id)}>Nadie</Button>
-                        </div>
-                        <ul className="space-y-1 max-h-40 overflow-auto pr-1">
-                          {miembros.map((nombre, i) => {
-                            const checked = st?.presentes.includes(nombre) || false
-                            return (
-                              <li key={i} className="flex items-center gap-2">
-                                <input
-                                  id={`${eq.id}-${i}`}
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => toggleIntegrante(eq.id, nombre)}
-                                  className="h-4 w-4"
-                                />
-                                <label htmlFor={`${eq.id}-${i}`} className="text-sm">{nombre}</label>
-                              </li>
-                            )
-                          })}
-                        </ul>
-                      </div>
-                    </details>
-
-                    {/* Pago compacto */}
-                    {requierePago ? (
-                      <div className="mt-3 rounded-lg border bg-white p-3">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[11px] text-gray-600">Cuota (MXN)</label>
-                            <input
-                              type="number"
-                              min={0}
-                              step="1"
-                              className="w-full rounded-lg border px-2 py-1"
-                              value={st?.cuotaEquipo ?? 0}
-                              onChange={(e) => actualizarUI(eq.id, { cuotaEquipo: Number(e.target.value || 0), savedOk: false })}
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[11px] text-gray-600">Recibido (MXN)</label>
-                            <input
-                              type="number"
-                              min={0}
-                              step="1"
-                              className="w-full rounded-lg border px-2 py-1"
-                              value={st?.montoEntregado ?? 0}
-                              onChange={(e) => actualizarUI(eq.id, { montoEntregado: Number(e.target.value || 0), savedOk: false })}
-                            />
-                          </div>
-                        </div>
-
-                        <div className="mt-2 text-sm flex flex-wrap gap-2">
-                          <span className={`px-2 py-0.5 rounded ${pagado ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-                            {pagado ? "Pagado" : `Pendiente: $${faltanteEquipo(eq.id).toFixed(2)}`}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800">
-                            Recibido: ${Number(st?.montoEntregado ?? 0).toFixed(2)}
-                          </span>
-                        </div>
-
-                        <div className="mt-3 grid gap-2 md:flex md:items-center">
-                          <input
-                            className="w-full md:w-auto rounded-lg border px-2 py-1 text-sm"
-                            value={st?.folio || ""}
-                            onChange={(e) => actualizarUI(eq.id, { folio: e.target.value, savedOk: false })}
-                            placeholder="Folio/Nota (opcional)"
-                          />
-                          <Button
-                            variant="solid"
-                            onClick={() => pagarUI(eq)}
-                            disabled={st?.saving}
-                          >
-                            {st?.saving ? "Pagando…" : `Pagar $${Number(st?.cuotaEquipo ?? 0).toFixed(2)}`}
-                          </Button>
-                          {st?.savedOk && <span className="text-emerald-700 text-sm">✓ Pago registrado</span>}
-                          {st?.error && <span className="text-red-600 text-sm">{st?.error}</span>}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-3 rounded-lg border bg-white p-3 text-sm text-gray-600">
-                        Evento sin cobro: solo se registra asistencia.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </Card>
-            )
-          })}
-        </div>
-      )}
-
-      <div className="pt-2">
-        <Link to={`/concursos`} className="text-sm text-tecnm-azul hover:underline">Volver a Concursos</Link>
-      </div>
-    </section>
-  )
-}
-
-/* ---------- Componente de resumen ---------- */
-function ResumePill({ label, value }: { label: string; value: string }) {
+  function ResumePill({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-gray-200 px-3 py-2 bg-gray-50">
       <div className="text-[11px] uppercase tracking-wide text-gray-700">{label}</div>
       <div className="text-base font-semibold">{value}</div>
     </div>
   )
+}
+  return (
+  <section className="space-y-5">
+    {/* Encabezado */}
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Asistencia & Caja</h1>
+        <p className="text-sm text-gray-600">
+          Curso: <span className="font-medium">{curso.nombre}</span> • {curso.sede} • {curso.categoria}
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button variant="outline" onClick={() => navigate(-1)}>Volver</Button>
+      </div>
+    </div>
+
+    {/* Resumen + controles */}
+    <Card className="p-4">
+      <div className="flex flex-col gap-4">
+        <div className="grid gap-2 md:grid-cols-3">
+          <ResumePill label="Caja inicial" value={`$${resumen.cajaInicial.toFixed(2)}`} />
+          <ResumePill label="Caja" value={`$${resumen.caja.toFixed(2)}`} />
+          <ResumePill label="Total estimado" value={`$${resumen.totalEstimado.toFixed(2)}`} />
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          {/* Columna izquierda: switches/inputs operativos */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={requierePago} onChange={(e)=>setRequierePago(e.target.checked)} />
+              Requiere pago
+            </label>
+
+            <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">
+              <span className="text-gray-600">Caja inicial (MXN)</span>
+              <input
+                type="number"
+                className="w-28 rounded-lg border px-2 py-1"
+                min={0}
+                step="1"
+                value={cajaInicial}
+                onChange={(e)=>setCajaInicial(Number(e.target.value || 0))}
+              />
+            </div>
+
+            {requierePago && (
+              <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">
+                <span>Cuota global</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="1"
+                  className="w-24 rounded-lg border px-2 py-1"
+                  value={cuotaGlobal}
+                  onChange={(e)=>setCuotaGlobal(Number(e.target.value || 0))}
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={()=>{
+                    setUi((prev)=>{
+                      const next={...prev}
+                      for (const id of Object.keys(next)) {
+                        next[id] = { ...next[id], cuotaEquipo: Number(cuotaGlobal)||0, savedOk:false }
+                      }
+                      return next
+                    })
+                  }}
+                >
+                  Aplicar
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Columna derecha: búsqueda/filtros/acciones */}
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            <div className="flex items-center gap-2 rounded-xl border bg-white px-3 py-2 shadow-sm">
+              <svg width="18" height="18" viewBox="0 0 24 24">
+                <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
+              </svg>
+              <input
+                value={buscarEquipo}
+                onChange={(e)=>setBuscarEquipo(e.target.value)}
+                placeholder="Buscar equipo, líder o institución…"
+                className="w-64 outline-none text-sm"
+              />
+            </div>
+
+            <select
+              value={filtroCategoria}
+              onChange={(e)=>setFiltroCategoria(e.target.value)}
+              className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+            >
+              {categorias.map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
+            </select>
+
+            <Button variant="outline" onClick={() => { setBuscarEquipo(""); setFiltroCategoria("Todas"); }}>
+              Limpiar
+            </Button>
+
+            <Button variant="outline" onClick={exportarExcel}>Exportar</Button>
+            <Button variant="solid" onClick={pagarMostrados}>Pagar mostrados</Button>
+          </div>
+        </div>
+      </div>
+    </Card>
+
+    {/* Lista de equipos */}
+    {equiposFiltrados.length === 0 ? (
+      <Card className="p-8 text-sm text-gray-600">No hay equipos que cumplan con el filtro.</Card>
+    ) : (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {equiposFiltrados.map((eq) => {
+          const st = ui[eq.id]
+          const miembros = mergeWithLeader(eq.integrantes || [], eq.nombreLider)
+          const esp = esperadoEquipo(eq.id)
+          const fal = faltanteEquipo(eq.id)
+          const pagado = st?.docPagado === true ? true : (requierePago ? (fal === 0 && esp > 0) : true)
+
+          return (
+            <Card key={eq.id} className="p-4 border-gray-100 hover:shadow-lg transition">
+              <div className="flex items-start gap-3">
+                <div className="h-10 w-10 shrink-0 grid place-items-center rounded-xl bg-tecnm-azul/10 text-tecnm-azul font-bold">
+                  {eq.nombreEquipo?.slice(0,2)?.toUpperCase() || "EQ"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold truncate">{eq.nombreEquipo}</h3>
+                      <p className="text-xs text-gray-600">
+                        Líder: {eq.nombreLider || "—"} {eq.institucion ? `• ${eq.institucion}` : ""}
+                      </p>
+                    </div>
+                    {eq.categoria && (
+                      <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-700 shrink-0">{eq.categoria}</span>
+                    )}
+                  </div>
+
+                  {/* Asistencia */}
+                  <details className="mt-3 rounded-lg border bg-gray-50">
+                    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium flex items-center justify-between">
+                      Asistencia <span className="text-xs text-gray-600">({st?.presentes.length || 0}/{miembros.length})</span>
+                    </summary>
+                    <div className="px-3 pb-3">
+                      <div className="flex gap-2 mb-2">
+                        <Button size="sm" variant="outline" onClick={() => seleccionarTodos(eq, miembros)}>Todos</Button>
+                        <Button size="sm" variant="outline" onClick={() => deseleccionarTodos(eq)}>Nadie</Button>
+                      </div>
+                      <ul className="space-y-1 max-h-40 overflow-auto pr-1">
+                        {miembros.map((nombre, i) => {
+                          const checked = st?.presentes.includes(nombre) || false
+                          return (
+                            <li key={i} className="flex items-center gap-2">
+                              <input
+                                id={`${eq.id}-${i}`}
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleIntegrante(eq, nombre)}
+                                className="h-4 w-4"
+                              />
+                              <label htmlFor={`${eq.id}-${i}`} className="text-sm">{nombre}</label>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    </div>
+                  </details>
+
+                  {/* Pago */}
+                  {requierePago ? (
+                    <div className="mt-3 rounded-lg border bg-white p-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] text-gray-600">Cuota (MXN)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step="1"
+                            className="w-full rounded-lg border px-2 py-1"
+                            value={st?.cuotaEquipo ?? 0}
+                            onChange={(e) => actualizarUI(eq.id, { cuotaEquipo: Number(e.target.value || 0), savedOk: false })}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-gray-600">Recibido (MXN)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step="1"
+                            className="w-full rounded-lg border px-2 py-1"
+                            value={st?.montoEntregado ?? 0}
+                            onChange={(e) => actualizarUI(eq.id, { montoEntregado: Number(e.target.value || 0), savedOk: false })}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-2 text-sm flex flex-wrap gap-2">
+                        <span className={`px-2 py-0.5 rounded ${pagado ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                          {pagado ? "Pagado" : `Pendiente: $${faltanteEquipo(eq.id).toFixed(2)}`}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                          Recibido: ${Number(st?.montoEntregado ?? 0).toFixed(2)}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 grid gap-2 md:flex md:items-center">
+                        <input
+                          className="w-full md:w-auto rounded-lg border px-2 py-1 text-sm"
+                          value={st?.folio || ""}
+                          onChange={(e) => actualizarUI(eq.id, { folio: e.target.value, savedOk: false })}
+                          placeholder="Folio/Nota (opcional)"
+                        />
+                        <Button
+                          variant="solid"
+                          onClick={() => pagarUI(eq)}
+                          disabled={st?.saving}
+                        >
+                          {st?.saving ? "Pagando…" : `Pagar $${Number(st?.cuotaEquipo ?? 0).toFixed(2)}`}
+                        </Button>
+                        {st?.savedOk && <span className="text-emerald-700 text-sm">✓ Pago registrado</span>}
+                        {st?.error && <span className="text-red-600 text-sm">{st?.error}</span>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-lg border bg-white p-3 text-sm text-gray-600">
+                      Evento sin cobro: solo se registra asistencia.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          )
+        })}
+      </div>
+    )}
+
+    <div className="pt-2">
+      <Link to={`/concursos`} className="text-sm text-tecnm-azul hover:underline">Volver a Concursos</Link>
+    </div>
+  </section>
+)
 }
