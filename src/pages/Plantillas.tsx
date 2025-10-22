@@ -5,7 +5,7 @@ import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card } from "../components/ui/Card";
 import Button from "../components/ui/Button";
-import { PDFDocument } from "pdf-lib"; // solo para obtener tamaño de página
+import { PDFDocument } from "pdf-lib"; // para tamaño/rotación
 
 // RND robusto (CJS/ESM)
 import * as ReactRnd from "react-rnd";
@@ -33,6 +33,9 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 declare global { interface Window { pdfjsLib?: any; } }
 const PDFJS_CDN = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174";
 
+// 🔒 DPR fijo para consistencia visual (independiente del zoom del navegador)
+const DPR_LOCK = 2; // si quieres mayor nitidez, sube a 3 (costo: más CPU)
+
 const ensurePdfJs = async (): Promise<any> => {
   if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
   await new Promise<void>((res, rej) => {
@@ -47,53 +50,76 @@ const ensurePdfJs = async (): Promise<any> => {
   return pdfjsLib;
 };
 
-/* ======================= Canvas PDF ======================= */
+/* ======================= Canvas PDF (rotación y resolución constantes) ======================= */
 function PDFCanvas({
   bytes,
   displayWidth,
+  rotationOverride = 0,
+  dpr = DPR_LOCK,
   onRendered,
 }: {
   bytes: Uint8Array;
   displayWidth: number;
+  rotationOverride?: number; // 🔒 siempre la misma rotación
+  dpr?: number;              // 🔒 DPR fijo
   onRendered?: (displayHeight: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastJob = useRef<number>(0);
 
   useEffect(() => {
     if (!bytes || bytes.byteLength === 0 || !displayWidth) return;
+
     let cancelled = false;
+    const jobId = Date.now();
+    lastJob.current = jobId;
+
     let destroyTask: (() => void) | undefined;
 
     (async () => {
       const pdfjsLib = await ensurePdfJs();
       const dataForWorker = bytes.slice();
 
-      const lt = pdfjsLib.getDocument({
+      const loadingTask = pdfjsLib.getDocument({
         data: dataForWorker,
         cMapUrl: `${PDFJS_CDN}/cmaps/`,
         cMapPacked: true,
         standardFontDataUrl: `${PDFJS_CDN}/standard_fonts/`,
       });
 
-      const pdf = await lt.promise;
+      const pdf = await loadingTask.promise;
+      if (cancelled || lastJob.current !== jobId) return;
+
       const page = await pdf.getPage(1);
 
-      const rotation = 0;
-      const ratio = Math.max(1, window.devicePixelRatio || 1);
+      // 🔒 rotación controlada (no depende del PDF viewer ni del DPR)
+      const rotation = ((rotationOverride || 0) % 360 + 360) % 360;
+
+      // Viewport base (sin escala), con la rotación bloqueada
       const v0 = page.getViewport({ scale: 1, rotation });
       const scale = displayWidth / v0.width;
-      const viewport = page.getViewport({ scale: scale * ratio, rotation });
+
+      // Usamos DPR fijo para la nitidez interna del canvas
+      const viewport = page.getViewport({
+        scale: scale * (dpr ?? DPR_LOCK),
+        rotation,
+      });
 
       const canvas = canvasRef.current!;
-      const ctx = canvas.getContext("2d")!;
-      const w = Math.floor(viewport.width);
-      const h = Math.floor(viewport.height);
+      const ctx = canvas.getContext("2d", { alpha: false })!;
+
+      const w = Math.round(viewport.width);
+      const h = Math.round(viewport.height);
 
       canvas.width = w;
       canvas.height = h;
-      canvas.style.width = `${Math.floor(w / ratio)}px`;
-      canvas.style.height = `${Math.floor(h / ratio)}px`;
+      // El tamaño CSS solo depende del displayWidth calculado por el editor
+      canvas.style.width = `${Math.round(w / (dpr ?? DPR_LOCK))}px`;
+      canvas.style.height = `${Math.round(h / (dpr ?? DPR_LOCK))}px`;
+      // Evita blur por escalados raros de GPU en ciertos navegadores
+      (canvas.style as any).imageRendering = "auto";
 
+      // Fondo blanco para impresoras
       ctx.save();
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, w, h);
@@ -102,16 +128,21 @@ function PDFCanvas({
       const renderTask = page.render({ canvasContext: ctx, viewport });
       await renderTask.promise;
 
-      if (!cancelled) onRendered?.(Math.floor(h / ratio));
+      if (!cancelled && lastJob.current === jobId) {
+        onRendered?.(Math.round(h / (dpr ?? DPR_LOCK)));
+      }
 
       destroyTask = () => {
-        try { lt.destroy?.(); } catch {}
+        try { loadingTask.destroy?.(); } catch {}
         try { pdf.cleanup?.(); } catch {}
       };
     })().catch((e) => console.error("PDF render error:", e));
 
-    return () => { cancelled = true; try { destroyTask?.(); } catch {} };
-  }, [bytes, displayWidth, onRendered]);
+    return () => {
+      cancelled = true;
+      try { destroyTask?.(); } catch {}
+    };
+  }, [bytes, displayWidth, rotationOverride, dpr, onRendered]);
 
   return <canvas ref={canvasRef} style={{ display: "block" }} />;
 }
@@ -128,7 +159,7 @@ type Layout = { width: number; height: number; boxes: Record<string, BoxCfg>; me
 type Plantilla = { id: string; nombre: string; tipo: TipoPlantilla; concursoId: string; actualizadoEn: string; layout: Layout; pdfUrl?: string; };
 type Concurso = { id: string; nombre: string };
 
-/* ============================= UI helpers (mismo estilo que Concursos) ============================= */
+/* ============================= UI helpers ============================= */
 const neoSurface = [
   "relative rounded-xl3",
   "bg-gradient-to-br from-white to-gray-50",
@@ -156,7 +187,6 @@ const pill = [
 const modalSurface = `${neoSurface} border-gray-200 ring-1 ring-gray-200 bg-white`;
 const modalInset = `${neoInset} border-gray-200 ring-1 ring-gray-200`;
 
-/* ============================= Texto y chips ============================= */
 const varsPorTipo: Record<TipoPlantilla, string[]> = {
   Coordinador: ["{{NOMBRE}}","{{CARGO}}","{{CONCURSO}}","{{FECHA}}","{{MENSAJE}}"],
   Asesor: ["{{NOMBRE}}","{{CONCURSO}}","{{EQUIPO}}","{{FECHA}}","{{MENSAJE}}"],
@@ -179,6 +209,8 @@ const FUENTES = [
   "Spectral","Josefin Sans","Cairo","Kumbh Sans","Plus Jakarta Sans","Space Grotesk","Inter Tight","Urbanist","Public Sans","Jost",
 ];
 
+type FormState = { id?: string; nombre: string; tipo: TipoPlantilla | ""; concursoId: string; layout: Layout; pdfUrl?: string; };
+
 const mkBox = (x:number,y:number,w:number,h:number,size=16,align:Align="center",bold=false):BoxCfg =>
   ({ x,y,w,h,size,align,bold,color:"#0f172a",font:"Inter" });
 
@@ -197,15 +229,13 @@ function NombreConcursoInline({ id, concursos }: { id: string; concursos: Concur
   return <>{c ? c.nombre : "—"}</>;
 }
 
-/* ============================== Modal + editor ============================== */
-type FormState = { id?: string; nombre: string; tipo: TipoPlantilla | ""; concursoId: string; layout: Layout; pdfUrl?: string; };
-
 const sanitizeBoxes = (boxes: Record<string, BoxCfg>) => {
   const seen = new Set<string>();
   const entries = Object.entries(boxes).filter(([k]) => k && !seen.has(k) && seen.add(k));
   return Object.fromEntries(entries);
 };
 
+/* ============================== Modal + editor ============================== */
 function ModalPlantilla({
   open, onClose, onSave, initial, concursos,
 }: {
@@ -222,6 +252,9 @@ function ModalPlantilla({
   const [active, setActive] = useState<string | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | undefined>(undefined);
+
+  // 🔒 metadatos bloqueados del PDF
+  const [pdfRotation, setPdfRotation] = useState<number>(0);
 
   const [enabled, setEnabled] = useState<Set<string>>(
     () => new Set(initial ? Object.keys(initial.layout.boxes).filter(Boolean) : [])
@@ -243,7 +276,7 @@ function ModalPlantilla({
     const ro = new ResizeObserver(recalc);
     ro.observe(el); recalc();
     return () => ro.disconnect();
-  }, [form.layout.width, form.layout.height]);
+  }, [form.layout.width, form.layout.height, pdfBytes]); // incluye pdfBytes para estabilidad
 
   // Reset al abrir
   useEffect(() => {
@@ -252,14 +285,16 @@ function ModalPlantilla({
       setForm({ ...initial, layout: { ...initial.layout, boxes: sanitizeBoxes(initial.layout.boxes || {}) } });
       setEnabled(new Set(Object.keys(initial.layout.boxes || {}).filter(Boolean)));
       setPdfFile(null); setPdfBytes(undefined);
+      setPdfRotation(0);
     } else {
       setForm({ nombre: "", tipo: "", concursoId: "", layout: { width: 520, height: 360, boxes: {}, mensajeBase: "" } });
       setEnabled(new Set()); setPdfFile(null); setPdfBytes(undefined);
+      setPdfRotation(0);
     }
     setActive(null);
   }, [open, initial]);
 
-  // Cargar pdfUrl existente a bytes
+  // Cargar pdfUrl existente a bytes (respeta rotación y w/h)
   useEffect(() => {
     let canceled = false;
     (async () => {
@@ -269,14 +304,26 @@ function ModalPlantilla({
         const res = await fetch(form.pdfUrl);
         const ab = await res.arrayBuffer();
         if (canceled || !ab || ab.byteLength === 0) return;
+
         const safe = new Uint8Array(ab);
         setPdfBytes(safe);
+
         try {
           const doc = await PDFDocument.load(safe);
           const page = doc.getPages()[0];
-          const w = Math.round(page.getWidth());
-          const h = Math.round(page.getHeight());
-          setForm((f) => ({ ...f, layout: { ...f.layout, width: w, height: h } }));
+
+          const rot = ((page.getRotation?.().angle ?? 0) % 360 + 360) % 360;
+          setPdfRotation(rot); // 🔒 guardamos rotación
+
+          const rawW = Math.round(page.getWidth());
+          const rawH = Math.round(page.getHeight());
+          const w = rot === 90 || rot === 270 ? rawH : rawW;
+          const h = rot === 90 || rot === 270 ? rawW : rawH;
+
+          setForm((f) => ({
+            ...f,
+            layout: { ...f.layout, width: w, height: h },
+          }));
         } catch {}
       } catch (e) {
         console.warn("No se pudo descargar el PDF existente:", e);
@@ -330,7 +377,7 @@ function ModalPlantilla({
     });
   };
 
-  // Subir PDF → bytes + tamaño
+  // Subir PDF → bytes + tamaño + rotación
   const handlePdf = async (file: File | null) => {
     if (!file) return;
     if (file.size === 0) { alert("El PDF está vacío."); return; }
@@ -340,8 +387,15 @@ function ModalPlantilla({
       const safe = new Uint8Array(ab.slice(0));
       const doc = await PDFDocument.load(safe);
       const page = doc.getPages()[0];
-      const w = Math.round(page.getWidth());
-      const h = Math.round(page.getHeight());
+
+      const rot = ((page.getRotation?.().angle ?? 0) % 360 + 360) % 360;
+      setPdfRotation(rot); // 🔒 guardamos rotación
+
+      const rawW = Math.round(page.getWidth());
+      const rawH = Math.round(page.getHeight());
+      const w = rot === 90 || rot === 270 ? rawH : rawW;
+      const h = rot === 90 || rot === 270 ? rawW : rawH;
+
       setForm((f) => ({ ...f, layout: { ...f.layout, width: w, height: h } }));
       setPdfFile(file); setPdfBytes(safe);
     } catch (e) {
@@ -351,8 +405,8 @@ function ModalPlantilla({
 
   if (!open) return null;
 
-  const displayW = Math.max(1, Math.floor(form.layout.width * displayScale));
-  const displayH = Math.max(1, Math.floor(form.layout.height * displayScale));
+  const displayW = Math.max(1, Math.round(form.layout.width * displayScale));
+  const displayH = Math.max(1, Math.round(form.layout.height * displayScale));
   const activeBox = active ? form.layout.boxes[active] : undefined;
   const tokenKeys = [...new Set(Object.keys(form.layout.boxes).filter(Boolean))];
 
@@ -480,15 +534,20 @@ function ModalPlantilla({
             <div ref={centerRef} className="relative overflow-auto bg-slate-50/40 rounded-xl">
               <div className="relative mx-auto my-2" style={{ width: displayW, height: displayH }} onClick={() => setActive(null)}>
                 {pdfBytes && pdfBytes.byteLength > 0 ? (
-                  <PDFCanvas bytes={pdfBytes} displayWidth={displayW} />
+                  <PDFCanvas
+                    bytes={pdfBytes}
+                    displayWidth={displayW}
+                    rotationOverride={pdfRotation} // 🔒 usar siempre la misma rotación
+                    dpr={DPR_LOCK}                // 🔒 resolución constante
+                  />
                 ) : (
                   <div className="absolute inset-0 grid place-items-center text-sm text-slate-500">
                     <div>{form.pdfUrl ? "Cargando vista previa del PDF…" : "Selecciona un PDF para previsualizarlo aquí."}</div>
                   </div>
                 )}
 
-                {tokenKeys.map((tok) => {
-                  const b = box(tok); if (!b) return null;
+                {([...Object.keys(form.layout.boxes)]).map((tok) => {
+                  const b = form.layout.boxes[tok]; if (!b) return null;
                   const x = Math.round(b.x * displayScale);
                   const y = Math.round(b.y * displayScale);
                   const w = Math.round(b.w * displayScale);
@@ -531,7 +590,7 @@ function ModalPlantilla({
 
             {/* Derecha: propiedades */}
             <div className="pl-1 overflow-auto">
-              {!active || !activeBox ? (
+              {!active || !form.layout.boxes[active] ? (
                 <div className={`${modalInset} p-4 text-sm text-slate-600`}>Selecciona un token para editar su tamaño, alineado, color y tipografía.</div>
               ) : (
                 <div className={`${modalInset} p-4 text-sm`}>
@@ -539,39 +598,63 @@ function ModalPlantilla({
                     <p className="font-medium">Propiedades de {active}</p>
                     <button className="text-xs text-slate-500 underline" onClick={() => setActive(null)}>cerrar</button>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs text-slate-600">Tamaño</label>
-                      <input type="number" min={8} max={96}
-                        className={`${modalInset} mt-1 w-full px-2 py-1`} value={activeBox.size}
-                        onChange={(e) => patchBox(active, { size: +e.target.value || 16 })} />
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-600">Alineado</label>
-                      <select className={`${modalInset} mt-1 w-full px-2 py-1`} value={activeBox.align}
-                        onChange={(e) => patchBox(active, { align: e.target.value as Align })}>
-                        <option value="left">left</option><option value="center">center</option><option value="right">right</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-600">Color</label>
-                      <input type="color" className="mt-1 w-full h-9 rounded" value={activeBox.color}
-                        onChange={(e) => patchBox(active, { color: e.target.value })} />
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-600">Tipografía</label>
-                      <select className={`${modalInset} mt-1 w-full px-2 py-1`} value={activeBox.font}
-                        onChange={(e) => patchBox(active, { font: e.target.value })}>
-                        {FUENTES.map((f) => (<option key={f} value={f}>{f}</option>))}
-                      </select>
-                    </div>
-                    <div className="col-span-2">
-                      <label className="flex items-center gap-2 text-sm mt-1">
-                        <input type="checkbox" checked={activeBox.bold} onChange={(e) => patchBox(active, { bold: e.target.checked })} />
-                        <span>Negritas</span>
-                      </label>
-                    </div>
-                  </div>
+                  {(() => {
+                    const activeBox = form.layout.boxes[active]!;
+                    return (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs text-slate-600">Tamaño</label>
+                          <input
+                            type="number" min={8} max={96}
+                            className={`${modalInset} mt-1 w-full px-2 py-1`}
+                            value={activeBox.size}
+                            onChange={(e) => patchBox(active, { size: +e.target.value || 16 })}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600">Alineado</label>
+                          <select
+                            className={`${modalInset} mt-1 w-full px-2 py-1`}
+                            value={activeBox.align}
+                            onChange={(e) => patchBox(active, { align: e.target.value as Align })}
+                          >
+                            <option value="left">left</option>
+                            <option value="center">center</option>
+                            <option value="right">right</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600">Color</label>
+                          <input
+                            type="color"
+                            className="mt-1 w-full h-9 rounded"
+                            value={activeBox.color}
+                            onChange={(e) => patchBox(active, { color: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-600">Tipografía</label>
+                          <select
+                            className={`${modalInset} mt-1 w-full px-2 py-1`}
+                            value={activeBox.font}
+                            onChange={(e) => patchBox(active, { font: e.target.value })}
+                          >
+                            {FUENTES.map((f) => (<option key={f} value={f}>{f}</option>))}
+                          </select>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="flex items-center gap-2 text-sm mt-1">
+                            <input
+                              type="checkbox"
+                              checked={activeBox.bold}
+                              onChange={(e) => patchBox(active, { bold: e.target.checked })}
+                            />
+                            <span>Negritas</span>
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -722,7 +805,7 @@ export default function Plantillas() {
         </Button>
       </div>
 
-      {/* Barra de acciones (estilo Concursos) */}
+      {/* Barra de acciones */}
       <Card className={`p-4 border-0 ${neoSurface} overflow-visible`}>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-2 overflow-x-auto overflow-y-visible py-1 -mx-1 px-1">
