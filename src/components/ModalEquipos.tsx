@@ -843,19 +843,7 @@ export default function ModalEquipos({
                     <label className="text-xs text-gray-600">Teléfono</label>
                     <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aTelefono} onChange={(e) => setATelefono(e.target.value)} />
                   </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Escolaridad</label>
-                    <select
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                      value={aEscolaridad}
-                      onChange={(e) => setAEscolaridad(e.target.value)}
-                    >
-                      <option key="ph" value="">{escolaridadOpts.length ? "Selecciona…" : "(sin opciones definidas)"}</option>
-                      {escolaridadOpts.map((o, i) => (
-                        <option key={`${o}__${i}`} value={o}>{o}</option>
-                      ))}
-                    </select>
-                  </div>
+                  
                 </div>
 
                 <div className="mt-3 flex justify-end gap-2">
