@@ -45,7 +45,7 @@ type Participante = {
   nombre: string;
   email?: string;
   equipo?: string;
-  puesto?: string; // "Líder" | "Integrante" | "Asesor" | "Coordinador" | ...
+  puesto?: string; // "Líder" | "Integrante" | "Asesor" | "Coordinador" | "Colaborador de Edecanes" | ...
 };
 
 type EstadoCorreo = "en-cola" | "enviado" | "error";
@@ -96,7 +96,7 @@ const normalizeEmail = (s?: string) => {
 // Busca el primer email válido en un objeto arbitrario (recursivo)
 const deepEmailScan = (obj: any): string => {
   if (!obj || typeof obj !== "object") return "";
-  for (const [k, v] of Object.entries(obj)) {
+  for (const [, v] of Object.entries(obj)) {
     if (typeof v === "string") {
       const ok = normalizeEmail(v);
       if (ok) return ok;
@@ -117,26 +117,24 @@ const pickFirstEmail = (obj: any, keys: string[]) => {
   return "";
 };
 
-// Obtiene email de equipo desde un documento de respuesta (varios posibles nombres)
 // Obtiene email de equipo desde un documento de respuesta (robusto y simple)
 const getTeamEmailFromResponse = (data: any, preset: any, custom: any): string => {
   const roots = [preset || {}, data || {}, custom || {}];
 
-  // 1) Campos directos en el documento (incluimos contactoEquipo como string)
+  // 1) Campos directos (incluye contactoEquipo como string)
   for (const obj of roots) {
-    const e =
-      pickFirstEmail(obj, [
-        "contactoEquipo",          // <— AHORA SOPORTADO COMO STRING
-        "emailEquipo",
-        "correoEquipo",
-        "equipoEmail",
-        "emailTeam",
-        "correo_del_equipo",
-      ]);
+    const e = pickFirstEmail(obj, [
+      "contactoEquipo",
+      "emailEquipo",
+      "correoEquipo",
+      "equipoEmail",
+      "emailTeam",
+      "correo_del_equipo",
+    ]);
     if (e) return e;
   }
 
-  // 2) Si contactoEquipo es un objeto { correo|email|mail }
+  // 2) contactoEquipo como objeto
   for (const obj of roots) {
     const ce = obj.contactoEquipo;
     if (ce && typeof ce === "object") {
@@ -145,12 +143,11 @@ const getTeamEmailFromResponse = (data: any, preset: any, custom: any): string =
     }
   }
 
-  // 3) Último recurso: escaneo profundo dentro de contactoEquipo
+  // 3) Escaneo profundo
   for (const obj of roots) {
     const e = deepEmailScan(obj.contactoEquipo);
     if (e) return e;
   }
-
   return "";
 };
 
@@ -174,7 +171,7 @@ export default function Constancias() {
   // Filtros secundarios
   const [busq, setBusq] = useState("");
   const [fEquipo, setFEquipo] = useState<string>("Todos");
-  const [fRol, setFRol] = useState<"Todos" | "Líder" | "Integrante" | "Asesor" | "Coordinador">("Todos");
+  const [fRol, setFRol] = useState<string>("Todos"); // dinámico
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [histOpen, setHistOpen] = useState(false);
@@ -255,7 +252,33 @@ export default function Constancias() {
   const plantilla = plantillas.find((p) => p.id === plantillaId);
   const concursoSel = concursos.find((c) => c.id === concursoId);
 
-  /* ----- Participantes + correos de equipo del concurso seleccionado ----- */
+  /* ----- Coordinadores (globales, fuera de concursos) ----- */
+  const [coordinadores, setCoordinadores] = useState<Participante[]>([]);
+  useEffect(() => {
+    const qCoord = query(collection(db, "coordinadores")); // 👈 sin where
+    const unsub = onSnapshot(qCoord, (snap) => {
+      const rows: Participante[] = snap.docs
+        .map((d) => {
+          const data: any = d.data() || {};
+          const nombre = (data.nombre || data.Nombres || "").toString().trim();
+          if (!isValidPerson(nombre)) return null;
+          const cargo: string =
+            (data.cargo || data.rol || data.puesto || "Coordinador").toString().trim() || "Coordinador";
+          return {
+            id: `coord-${d.id}`,
+            nombre,
+            email: normalizeEmail(data.email || data.correo) || "",
+            equipo: "", // no aplica
+            puesto: cargo, // 👈 usamos el cargo como rol mostrado
+          } as Participante;
+        })
+        .filter(Boolean) as Participante[];
+      setCoordinadores(rows);
+    });
+    return () => unsub();
+  }, []);
+
+  /* ----- Participantes del concurso + coordinadores globales ----- */
   useEffect(() => {
     setParticipantes([]);
     setSel({});
@@ -270,7 +293,7 @@ export default function Constancias() {
         const todos: Participante[] = [];
         const teamMap: Record<string, string> = {};
 
-        // 1) Participantes desde encuestas
+        // 1) Participantes desde encuestas del concurso
         const encuestasRef = collection(db, "encuestas");
         const qEnc = query(encuestasRef, where("cursoId", "==", concursoId));
         const encuestasSnap = await getDocs(qEnc);
@@ -292,7 +315,6 @@ export default function Constancias() {
               ? data.integrantes
               : [];
 
-            // --- NUEVO: obtener correo de equipo robusto ---
             const teamEmail = getTeamEmailFromResponse(data, preset, custom);
             if (equipo && teamEmail && !teamMap[equipo]) teamMap[equipo] = teamEmail;
 
@@ -337,22 +359,8 @@ export default function Constancias() {
           });
         }
 
-        // 2) Coordinadores desde colección "coordinadores" (por cursoId)
-        const coordRef = collection(db, "coordinadores");
-        const qCoord = query(coordRef, where("cursoId", "==", concursoId));
-        const coordSnap = await getDocs(qCoord);
-        coordSnap.forEach((doc) => {
-          const data: any = doc.data() || {};
-          const nombre = data.nombre || data.Nombres || "";
-          if (!isValidPerson(nombre)) return;
-          todos.push({
-            id: `coord-${doc.id}`,
-            nombre,
-            email: normalizeEmail(data.email || data.correo) || "",
-            equipo: "", // no aplica
-            puesto: "Coordinador",
-          });
-        });
+        // 2) Agregar coordinadores globales (fuera del concurso)
+        for (const c of coordinadores) todos.push(c);
 
         // normalizar y ordenar
         const unique = new Map<string, Participante>();
@@ -379,12 +387,22 @@ export default function Constancias() {
         setTeamEmailByName({});
       }
     })();
-  }, [concursoId]);
+  }, [concursoId, coordinadores]); // 👈 reacciona si cambian los coordinadores
 
   /* ----- Derivados UI ----- */
   const equiposDisponibles = useMemo(() => {
     const set = new Set<string>();
     for (const p of participantes) if (p.equipo && p.equipo.trim()) set.add(p.equipo.trim());
+    return ["Todos", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [participantes]);
+
+  // Roles disponibles (dinámicos, incluyen cargos de coordinadores)
+  const rolesDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of participantes) {
+      const rol = (p.puesto || "").trim();
+      if (rol) set.add(rol);
+    }
     return ["Todos", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [participantes]);
 
@@ -465,7 +483,6 @@ export default function Constancias() {
         return { ...prev, [field]: next };
       });
 
-      // restaurar caret después de actualizar estado
       requestAnimationFrame(() => {
         const pos = start + token.length;
         target.focus();
@@ -745,10 +762,10 @@ export default function Constancias() {
             <select
               className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
               value={fRol}
-              onChange={(e) => setFRol(e.target.value as any)}
+              onChange={(e) => setFRol(e.target.value)}
               disabled={!concursoId}
             >
-              {["Todos", "Líder", "Integrante", "Asesor", "Coordinador"].map((r) => (
+              {rolesDisponibles.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>

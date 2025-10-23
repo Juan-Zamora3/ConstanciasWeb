@@ -2,8 +2,8 @@
 import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app"
 import { getAuth, type Auth } from "firebase/auth"
 import { getFirestore, type Firestore } from "firebase/firestore"
-import { getStorage, type FirebaseStorage } from "firebase/storage"
 
+import { getStorage } from "firebase/storage";
 // Config de tu proyecto
 const firebaseConfig = {
   apiKey: "AIzaSyA9wYfjjjjp6w8<QhslmOu72idKolgsXXCo",
@@ -21,7 +21,7 @@ const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseCon
 // Servicios
 export const auth: Auth = getAuth(app)
 export const db: Firestore = getFirestore(app)
-export const storage: FirebaseStorage = getStorage(app)
+export const storage = getStorage(app);
 
 // Export default por si lo necesitas
 export default app
