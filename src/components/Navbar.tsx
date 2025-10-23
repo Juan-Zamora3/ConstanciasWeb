@@ -29,17 +29,10 @@ export default function Navbar() {
             <nav className="flex items-center gap-1">
               <NavLink to="/" className={active}>Inicio</NavLink>
               <NavLink to="/concursos" className={active}>Concursos</NavLink>
-              <NavLink to="/plantillas" className={active}>Plantillas</NavLink>
-              <NavLink to="/constancias" className={active}>Constancias</NavLink>
             </nav>
 
             {/* Sesión */}
-            <Link
-              to="/login"
-              className="px-4 py-2 rounded-full bg-white/15 hover:bg-white/25 text-sm"
-            >
-              Iniciar sesión
-            </Link>
+            
           </div>
         </div>
       </div>

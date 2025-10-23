@@ -28,6 +28,9 @@ import {
 import type { DocumentData } from "firebase/firestore"
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage"
 
+const SHOW_CARD_ACTIONS = false; // ponlo en true si quieres ver los botones
+
+
 /* ---------------- Tipos ---------------- */
 export type EstadoConcurso = "Activo" | "Próximo" | "Finalizado"
 
@@ -226,6 +229,7 @@ function EditCursoModal({
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | undefined>(undefined)
   const [jumping, setJumping] = useState(false)
+
 
   const MODAL_UI = {
     maxW: "max-w-[1280px]",
@@ -717,28 +721,31 @@ function TarjetaConcurso({
           </div>
 
           {/* Acciones */}
-          <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
-            <IconBtn title="Editar" variant="primary" onClick={() => onEdit(c)}>
-              <Pencil size={18} />
-            </IconBtn>
-            <IconBtn title="Plantillas" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
-              <Layers size={18} />
-            </IconBtn>
-            <IconBtn title="Constancias" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
-              <FileText size={18} />
-            </IconBtn>
-            <IconBtn title="Añadir coordinador" onClick={() => onAddCoord(c)}>
-              <UserPlus size={18} />
-            </IconBtn>
-            <IconBtn title="Asistencia & Pago" variant="primary" onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}>
-              <HandCoins size={18} />
-            </IconBtn>
-            {onDelete && (
-              <IconBtn title="Eliminar" variant="danger" onClick={() => onDelete(c)}>
-                <Trash2 size={18} />
-              </IconBtn>
-            )}
-          </div>
+          {SHOW_CARD_ACTIONS && (
+  <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+    <IconBtn title="Editar" variant="primary" onClick={() => onEdit(c)}>
+      <Pencil size={18} />
+    </IconBtn>
+    <IconBtn title="Plantillas" onClick={() => navigate(`/plantillas?concursoId=${c.id}`)}>
+      <Layers size={18} />
+    </IconBtn>
+    <IconBtn title="Constancias" onClick={() => navigate(`/constancias?concursoId=${c.id}`)}>
+      <FileText size={18} />
+    </IconBtn>
+    <IconBtn title="Añadir coordinador" onClick={() => onAddCoord(c)}>
+      <UserPlus size={18} />
+    </IconBtn>
+    <IconBtn title="Asistencia & Pago" variant="primary" onClick={() => navigate(`/asistencias?concursoId=${c.id}`)}>
+      <HandCoins size={18} />
+    </IconBtn>
+    {onDelete && (
+      <IconBtn title="Eliminar" variant="danger" onClick={() => onDelete(c)}>
+        <Trash2 size={18} />
+      </IconBtn>
+    )}
+  </div>
+)}
+
 
           <div className="pt-1">
             <BarraProgreso actual={c.participantesActual} total={c.participantesMax} />
@@ -958,13 +965,7 @@ export default function Concursos() {
         </div>
 
         <div className="flex gap-2">
-          <Button
-            variant="solid"
-            className="rounded-full px-4 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
-            onClick={abrirCrear}
-          >
-            Nuevo curso
-          </Button>
+          
           <Link to="/" className="text-sm text-tecnm-azul hover:underline">Volver al inicio</Link>
         </div>
       </div>
