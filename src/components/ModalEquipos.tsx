@@ -182,12 +182,33 @@ export default function ModalEquipos({
   const [aNombreLider, setANombreLider] = useState("")
   const [aEmail, setAEmail] = useState("")
   const [aCategoria, setACategoria] = useState("")
-  const [aIntegrantes, setAIntegrantes] = useState("")
+  // const [aIntegrantes, setAIntegrantes] = useState("") // ← ya no se usa (dejo comentado por si lo ocupas)
   const [aAsesor, setAAsesor] = useState("")
   const [aInstitucion, setAInstitucion] = useState("")
   const [aTelefono, setATelefono] = useState("")
   const [aEscolaridad, setAEscolaridad] = useState("")
   const [aPagado, setAPagado] = useState(false)
+
+  // 🔢 NUEVO: número de participantes desde Firestore y lista de N comboboxes
+  const [cantParticipantes, setCantParticipantes] = useState<number>(1)
+  const [aIntegrantesList, setAIntegrantesList] = useState<string[]>([])
+
+  // Mantener el arreglo del tamaño indicado
+  useEffect(() => {
+    setAIntegrantesList(prev =>
+      Array.from({ length: cantParticipantes }, (_, i) => prev[i] ?? "")
+    )
+  }, [cantParticipantes])
+
+  // Sugerencias para los combobox (a partir de equipos existentes)
+  const integrantesSugeridos = useMemo(() => {
+    const s = new Set<string>()
+    lista.forEach(eq => {
+      if (eq.nombreLider) s.add(eq.nombreLider)
+      ;(eq.integrantes || []).forEach(n => n && s.add(n))
+    })
+    return Array.from(s).sort((a, b) => a.localeCompare(b, "es"))
+  }, [lista])
 
   // Opciones para los combos
   const [categoriasCurso, setCategoriasCurso] = useState<string[]>([])
@@ -225,22 +246,34 @@ export default function ModalEquipos({
         setEncuestaDestino("")
       }
 
-      // 2) CATEGORÍAS + ESCOLARIDAD
+      // 2) CATEGORÍAS + ESCOLARIDAD + CANTIDAD PARTICIPANTES
       try {
         const catsSet = new Set<string>()
         let escolCurso: string[] = []
+        let cp = 1
 
         // 2.1 doc del curso
         const cursoSnap = await getDoc(fsDoc(db, "Cursos", concurso.id))
         if (cursoSnap.exists()) {
           const data: any = cursoSnap.data()
+
+          // categorías
           collectCategoriasFromAny(data).forEach((c) => catsSet.add(c))
-          // Escolaridad (si existiera en cualquier lado)
+
+          // escolaridad (si existiera)
           escolCurso = findComboOptions(
             { preguntasPersonalizadas: data?.preguntasPersonalizadas, campos: data?.campos, preguntas: data?.preguntas, extras: data?.extras, root: data },
             "Escolaridad"
           )
           if (!escolCurso.length) escolCurso = toStringArray(data?.escolaridadOpciones)
+
+          // 🔢 cantidadParticipantes (fallbacks por si cambia la ruta)
+          const cpRaw =
+            Number(data?.cantidadParticipantes) ||
+            Number(data?.formularioGrupos?.cantidadParticipantes) ||
+            Number(data?.camposPreestablecidos?.cantidadParticipantes)
+
+          cp = Number.isFinite(cpRaw) && cpRaw > 0 ? Math.min(20, cpRaw) : 1
         }
 
         // 2.2 subdoc config opcional
@@ -259,7 +292,7 @@ export default function ModalEquipos({
           })
         } catch {}
 
-        // 2.4 recorrer encuestas del curso
+        // 2.4 recorrer encuestas del curso (por si ahí está el combo)
         try {
           const encSnap = await getDocs(query(collection(db, "encuestas"), where("cursoId", "==", concurso.id)))
           encSnap.forEach((d) => {
@@ -278,15 +311,20 @@ export default function ModalEquipos({
         setCategoriasCurso(catsFinal)
         setEscolaridadOpts(escolCurso)
 
-        // Defaults seguros
+        // defaults seguros
         setACategoria((prev) => (prev && catsFinal.includes(prev) ? prev : catsFinal[0] || ""))
         setAEscolaridad((prev) => (prev && escolCurso.includes(prev) ? prev : escolCurso[0] || ""))
 
-        console.log("[ModalEquipos] categorias =>", catsFinal, "escolaridad =>", escolCurso)
+        // cantidad participantes y arreglo de inputs
+        setCantParticipantes(cp)
+        setAIntegrantesList(Array.from({ length: cp }, () => ""))
+
       } catch (e) {
         console.warn("[ModalEquipos] opciones curso/encuestas:", e)
         setCategoriasCurso([])
         setEscolaridadOpts([])
+        setCantParticipantes(1)
+        setAIntegrantesList([""])
       }
     })()
   }, [open, concurso?.id])
@@ -311,12 +349,12 @@ export default function ModalEquipos({
   }, [busq, filterCat, lista])
 
   const totalParticipantes = useMemo(() => {
-    return filtrados.reduce((acc, eq) => {
-      const integrantes = Array.isArray(eq.integrantes) ? eq.integrantes.length : 0
-      const lider = eq.nombreLider?.trim() ? 1 : 0
-      return acc + integrantes + lider
-    }, 0)
-  }, [filtrados])
+  return filtrados.reduce((acc, eq) => {
+    const miembros = mergeWithLeaderNames(eq.integrantes || [], eq.nombreLider)
+    return acc + miembros.length
+  }, 0)
+}, [filtrados])
+
 
   const togglePagado = async (eq: Equipo, val: boolean) => {
     if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
@@ -421,75 +459,84 @@ export default function ModalEquipos({
   }
 
   const guardarEdicion = async () => {
-    if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
-    try {
-      setSavingEdit(true)
+  if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
+  try {
+    setSavingEdit(true)
 
-      const patch: any = {
-        preset: {
-          nombreEquipo: detailEq.nombreEquipo || "",
-          nombreLider: detailEq.nombreLider || "",
-          contactoEquipo: detailEq.contactoEquipo || "",
-          categoria: detailEq.categoria || "",
-          integrantes: Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
-        },
-        custom: {
-          p1: detailEq.maestroAsesor || "",
-          p2: detailEq.institucion || "",
-          p3: detailEq.telefono || "",
-          p4: detailEq.escolaridad || "",
-        },
-        pagado: !!detailEq.pagado,
-      }
+    // ✅ Asegurar que el líder esté en integrantes
+    const integrantesFinal = mergeWithLeaderNames(
+      Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
+      detailEq.nombreLider
+    )
 
-      const encDocRef = fsDoc(db, "encuestas", detailEq._encuestaId, "respuestas", detailEq._respId)
-
-      await updateDoc(encDocRef, patch)
-
-      if (patch.pagado) {
-        if (!concurso?.id) {
-          alert("Se marcó como pagado, pero falta cursoId para reflejarlo en Asistencias.")
-        } else {
-          const miembros = mergeWithLeaderNames(patch.preset.integrantes, patch.preset.nombreLider)
-          try {
-            await pagarEquipo({
-              cursoId: concurso.id,
-              cursoNombre: concurso?.nombre || "Curso",
-              equipo: {
-                id: detailEq._respId,
-                nombreEquipo: patch.preset.nombreEquipo,
-                integrantes: miembros,
-                nombreLider: patch.preset.nombreLider,
-                categoria: patch.preset.categoria,
-                contactoEquipo: patch.preset.contactoEquipo,
-                institucion: patch.custom.p2,
-              },
-              presentes: miembros,
-              cuota: 100,
-              metodo: "Efectivo",
-            })
-          } catch (e) {
-            console.error(e)
-            await updateDoc(encDocRef, { pagado: false })
-            patch.pagado = false
-            alert("No se pudo registrar el pago en Asistencias. 'Pagado' fue revertido.")
-          }
-        }
-      } else {
-        if (concurso?.id) {
-          await setDoc(fsDoc(db, "Cursos", concurso.id, "asistencias", detailEq._respId), { pago: { pagado: false } }, { merge: true })
-        }
-      }
-
-      setLista((prev) =>
-        prev.map((x) => (x._respId === detailEq._respId ? { ...x, ...detailEq, pagado: patch.pagado } : x))
-      )
-      setIsEditing(false)
-      setSnapshotEq({ ...detailEq, pagado: patch.pagado })
-    } finally {
-      setSavingEdit(false)
+    const patch: any = {
+      preset: {
+        nombreEquipo: detailEq.nombreEquipo || "",
+        nombreLider: detailEq.nombreLider || "",
+        contactoEquipo: detailEq.contactoEquipo || "",
+        categoria: detailEq.categoria || "",
+        integrantes: integrantesFinal, // 👈 líder incluido
+      },
+      custom: {
+        p1: detailEq.maestroAsesor || "",
+        p2: detailEq.institucion || "",
+        p3: detailEq.telefono || "",
+        p4: detailEq.escolaridad || "",
+      },
+      pagado: !!detailEq.pagado,
     }
+
+    const encDocRef = fsDoc(db, "encuestas", detailEq._encuestaId, "respuestas", detailEq._respId)
+    await updateDoc(encDocRef, patch)
+
+    if (patch.pagado) {
+      if (!concurso?.id) {
+        alert("Se marcó como pagado, pero falta cursoId para reflejarlo en Asistencias.")
+      } else {
+        const miembros = integrantesFinal // ya está mergeado
+        try {
+          await pagarEquipo({
+            cursoId: concurso.id,
+            cursoNombre: concurso?.nombre || "Curso",
+            equipo: {
+              id: detailEq._respId,
+              nombreEquipo: patch.preset.nombreEquipo,
+              integrantes: miembros,
+              nombreLider: patch.preset.nombreLider,
+              categoria: patch.preset.categoria,
+              contactoEquipo: patch.preset.contactoEquipo,
+              institucion: patch.custom.p2,
+            },
+            presentes: miembros,
+            cuota: 100,
+            metodo: "Efectivo",
+          })
+        } catch (e) {
+          console.error(e)
+          await updateDoc(encDocRef, { pagado: false })
+          patch.pagado = false
+          alert("No se pudo registrar el pago en Asistencias. 'Pagado' fue revertido.")
+        }
+      }
+    } else {
+      if (concurso?.id) {
+        await setDoc(fsDoc(db, "Cursos", concurso.id, "asistencias", detailEq._respId), { pago: { pagado: false } }, { merge: true })
+      }
+    }
+
+    // Actualiza estado local con integrantesFinal
+    setLista((prev) =>
+      prev.map((x) =>
+        x._respId === detailEq._respId ? { ...x, ...detailEq, integrantes: integrantesFinal, pagado: patch.pagado } : x
+      )
+    )
+    setIsEditing(false)
+    setSnapshotEq({ ...detailEq, integrantes: integrantesFinal, pagado: patch.pagado })
+  } finally {
+    setSavingEdit(false)
   }
+}
+
 
   const cancelarEdicion = () => {
     if (snapshotEq) setDetailEq(snapshotEq)
@@ -497,100 +544,104 @@ export default function ModalEquipos({
   }
 
   const añadirRapido = async () => {
-    if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
-    try {
-      setSavingAdd(true)
+  if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
+  try {
+    setSavingAdd(true)
 
-      const integrantes = aIntegrantes.split(",").map((s) => s.trim()).filter(Boolean)
+    // Integrantes desde los N comboboxes
+    const base = aIntegrantesList.map(s => s.trim()).filter(Boolean)
+    // ✅ Incluye al líder (sin duplicar)
+    const integrantes = mergeWithLeaderNames(base, aNombreLider)
 
-      const payload = {
-        createdAt: serverTimestamp(),
-        submittedAt: serverTimestamp(),
-        pagado: aPagado,
-        preset: {
-          nombreEquipo: aNombreEquipo.trim() || "Equipo",
-          nombreLider: aNombreLider.trim() || "",
-          contactoEquipo: aEmail.trim() || "",
-          categoria: aCategoria.trim() || "",
-          integrantes,
-        },
-        custom: {
-          p1: aAsesor.trim() || "",
-          p2: aInstitucion.trim() || "",
-          p3: aTelefono.trim() || "",
-          p4: aEscolaridad.trim() || "",
-        },
-      }
-
-      const refDoc = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
-
-      const nuevo: Equipo = {
-        id: refDoc.id,
-        _respId: refDoc.id,
-        _encuestaId: encuestaDestino,
-        pagado: aPagado,
-        nombreEquipo: payload.preset.nombreEquipo,
-        nombreLider: payload.preset.nombreLider,
-        integrantes,
-        contactoEquipo: payload.preset.contactoEquipo,
-        categoria: payload.preset.categoria,
-        submittedAt: new Date().toISOString(),
-        maestroAsesor: payload.custom.p1,
-        institucion: payload.custom.p2,
-        telefono: payload.custom.p3,
-        escolaridad: payload.custom.p4,
-      }
-      setLista((prev) => [nuevo, ...prev])
-
-      if (aPagado) {
-        if (!concurso?.id) {
-          alert("Se marcó como pagado, pero no tengo cursoId para reflejarlo en Asistencias.")
-        } else {
-          const miembros = mergeWithLeaderNames(integrantes, aNombreLider)
-          try {
-            await pagarEquipo({
-              cursoId: concurso.id,
-              cursoNombre: concurso?.nombre || "Curso",
-              equipo: {
-                id: refDoc.id,
-                nombreEquipo: payload.preset.nombreEquipo,
-                integrantes: miembros,
-                nombreLider: payload.preset.nombreLider,
-                categoria: payload.preset.categoria,
-                contactoEquipo: payload.preset.contactoEquipo,
-                institucion: payload.custom.p2,
-              },
-              presentes: miembros,
-              cuota: 100,
-              metodo: "Efectivo",
-            })
-          } catch (e) {
-            console.error(e)
-            await updateDoc(fsDoc(db, "encuestas", encuestaDestino, "respuestas", refDoc.id), { pagado: false })
-            setLista((prev) => prev.map((x) => (x._respId === refDoc.id ? { ...x, pagado: false } : x)))
-            alert("El equipo se añadió, pero no se pudo registrar el pago en Asistencias. Quedó como Pendiente.")
-          }
-        }
-      }
-
-      setANombreEquipo("")
-      setANombreLider("")
-      setAEmail("")
-      setACategoria("")
-      setAIntegrantes("")
-      setAAsesor("")
-      setAInstitucion("")
-      setATelefono("")
-      setAEscolaridad("")
-      setAPagado(false)
-      setAddingOpen(false)
-    } catch (e) {
-      console.error(e)
-      alert("No se pudo añadir el equipo.")
-    } finally {
-      setSavingAdd(false)
+    const payload = {
+      createdAt: serverTimestamp(),
+      submittedAt: serverTimestamp(),
+      pagado: aPagado,
+      preset: {
+        nombreEquipo: aNombreEquipo.trim() || "Equipo",
+        nombreLider: aNombreLider.trim() || "",
+        contactoEquipo: aEmail.trim() || "",
+        categoria: aCategoria.trim() || "",
+        integrantes, // 👈 ya trae al líder adentro
+      },
+      custom: {
+        p1: aAsesor.trim() || "",
+        p2: aInstitucion.trim() || "",
+        p3: aTelefono.trim() || "",
+        p4: aEscolaridad.trim() || "",
+      },
     }
+
+    const refDoc = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
+
+    const nuevo: Equipo = {
+      id: refDoc.id,
+      _respId: refDoc.id,
+      _encuestaId: encuestaDestino,
+      pagado: aPagado,
+      nombreEquipo: payload.preset.nombreEquipo,
+      nombreLider: payload.preset.nombreLider,
+      integrantes, // 👈 líder incluido
+      contactoEquipo: payload.preset.contactoEquipo,
+      categoria: payload.preset.categoria,
+      submittedAt: new Date().toISOString(),
+      maestroAsesor: payload.custom.p1,
+      institucion: payload.custom.p2,
+      telefono: payload.custom.p3,
+      escolaridad: payload.custom.p4,
+    }
+    setLista((prev) => [nuevo, ...prev])
+
+    if (aPagado) {
+      if (!concurso?.id) {
+        alert("Se marcó como pagado, pero no tengo cursoId para reflejarlo en Asistencias.")
+      } else {
+        // Ya incluye al líder; de todos modos mergea por seguridad
+        const miembros = mergeWithLeaderNames(integrantes, aNombreLider)
+        await pagarEquipo({
+          cursoId: concurso.id,
+          cursoNombre: concurso?.nombre || "Curso",
+          equipo: {
+            id: refDoc.id,
+            nombreEquipo: payload.preset.nombreEquipo,
+            integrantes: miembros,
+            nombreLider: payload.preset.nombreLider,
+            categoria: payload.preset.categoria,
+            contactoEquipo: payload.preset.contactoEquipo,
+            institucion: payload.custom.p2,
+          },
+          presentes: miembros,
+          cuota: 100,
+          metodo: "Efectivo",
+        }).catch(async (e) => {
+          console.error(e)
+          await updateDoc(fsDoc(db, "encuestas", encuestaDestino, "respuestas", refDoc.id), { pagado: false })
+          setLista((prev) => prev.map((x) => (x._respId === refDoc.id ? { ...x, pagado: false } : x)))
+          alert("El equipo se añadió, pero no se pudo registrar el pago en Asistencias. Quedó como Pendiente.")
+        })
+      }
+    }
+
+    // Reset
+    setANombreEquipo("")
+    setANombreLider("")
+    setAEmail("")
+    setACategoria("")
+    setAAsesor("")
+    setAInstitucion("")
+    setATelefono("")
+    setAEscolaridad("")
+    setAPagado(false)
+    setAIntegrantesList(Array.from({ length: cantParticipantes }, () => ""))
+    setAddingOpen(false)
+  } catch (e) {
+    console.error(e)
+    alert("No se pudo añadir el equipo.")
+  } finally {
+    setSavingAdd(false)
   }
+}
+
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -745,10 +796,41 @@ export default function ModalEquipos({
                       ))}
                     </select>
                   </div>
+
+                  {/* Integrantes N comboboxes */}
                   <div className="md:col-span-2">
-                    <label className="text-xs text-gray-600">Integrantes (separados por coma)</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aIntegrantes} onChange={(e) => setAIntegrantes(e.target.value)} placeholder="Persona 1, Persona 2, Persona 3…" />
+                    <label className="text-xs text-gray-600">
+                      Integrantes ({cantParticipantes})
+                    </label>
+
+                    <div className="mt-1 grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {Array.from({ length: cantParticipantes }).map((_, i) => (
+                        <input
+                          key={`int-${i}`}
+                          list="lista-integrantes"
+                          value={aIntegrantesList[i] ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setAIntegrantesList(prev => {
+                              const arr = [...prev]
+                              arr[i] = v
+                              return arr
+                            })
+                          }}
+                          placeholder={`Integrante ${i + 1}`}
+                          className="w-full rounded-xl border px-3 py-2 text-sm"
+                        />
+                      ))}
+                    </div>
+
+                    {/* Sugerencias para el combobox */}
+                    <datalist id="lista-integrantes">
+                      {integrantesSugeridos.map((n) => (
+                        <option key={n} value={n} />
+                      ))}
+                    </datalist>
                   </div>
+
                   <div>
                     <label className="text-xs text-gray-600">Maestro asesor</label>
                     <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aAsesor} onChange={(e) => setAAsesor(e.target.value)} />
@@ -796,7 +878,8 @@ export default function ModalEquipos({
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtrados.map((eq) => {
                   const iniciales = eq.nombreEquipo?.slice(0, 2)?.toUpperCase() || "EQ"
-                  const integrantesCount = Array.isArray(eq.integrantes) ? eq.integrantes.length : 0
+                  const integrantesCount = mergeWithLeaderNames(eq.integrantes || [], eq.nombreLider).length
+
                   return (
                     <Card
                       key={eq.id}
