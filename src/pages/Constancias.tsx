@@ -93,6 +93,22 @@ const normalizeEmail = (s?: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) ? v : "";
 };
 
+// Busca el primer email válido en un objeto arbitrario (recursivo)
+const deepEmailScan = (obj: any): string => {
+  if (!obj || typeof obj !== "object") return "";
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === "string") {
+      const ok = normalizeEmail(v);
+      if (ok) return ok;
+    } else if (v && typeof v === "object") {
+      const hit = deepEmailScan(v);
+      if (hit) return hit;
+    }
+  }
+  return "";
+};
+
+// Toma el primer email válido dentro de un set de claves conocidas
 const pickFirstEmail = (obj: any, keys: string[]) => {
   for (const k of keys) {
     const e = normalizeEmail(obj?.[k]);
@@ -100,6 +116,44 @@ const pickFirstEmail = (obj: any, keys: string[]) => {
   }
   return "";
 };
+
+// Obtiene email de equipo desde un documento de respuesta (varios posibles nombres)
+// Obtiene email de equipo desde un documento de respuesta (robusto y simple)
+const getTeamEmailFromResponse = (data: any, preset: any, custom: any): string => {
+  const roots = [preset || {}, data || {}, custom || {}];
+
+  // 1) Campos directos en el documento (incluimos contactoEquipo como string)
+  for (const obj of roots) {
+    const e =
+      pickFirstEmail(obj, [
+        "contactoEquipo",          // <— AHORA SOPORTADO COMO STRING
+        "emailEquipo",
+        "correoEquipo",
+        "equipoEmail",
+        "emailTeam",
+        "correo_del_equipo",
+      ]);
+    if (e) return e;
+  }
+
+  // 2) Si contactoEquipo es un objeto { correo|email|mail }
+  for (const obj of roots) {
+    const ce = obj.contactoEquipo;
+    if (ce && typeof ce === "object") {
+      const e = pickFirstEmail(ce, ["correo", "email", "mail"]);
+      if (e) return e;
+    }
+  }
+
+  // 3) Último recurso: escaneo profundo dentro de contactoEquipo
+  for (const obj of roots) {
+    const e = deepEmailScan(obj.contactoEquipo);
+    if (e) return e;
+  }
+
+  return "";
+};
+
 
 /* =================== Página =================== */
 export default function Constancias() {
@@ -238,30 +292,8 @@ export default function Constancias() {
               ? data.integrantes
               : [];
 
-            // intentar detectar correo de equipo en distintos nombres de campo
-            const teamEmail =
-              pickFirstEmail(preset, [
-                "emailEquipo",
-                "correoEquipo",
-                "equipoEmail",
-                "emailTeam",
-                "correo_del_equipo",
-              ]) ||
-              pickFirstEmail(data, [
-                "emailEquipo",
-                "correoEquipo",
-                "equipoEmail",
-                "emailTeam",
-                "correo_del_equipo",
-              ]) ||
-              pickFirstEmail(custom, [
-                "emailEquipo",
-                "correoEquipo",
-                "equipoEmail",
-                "emailTeam",
-                "correo_del_equipo",
-              ]);
-
+            // --- NUEVO: obtener correo de equipo robusto ---
+            const teamEmail = getTeamEmailFromResponse(data, preset, custom);
             if (equipo && teamEmail && !teamMap[equipo]) teamMap[equipo] = teamEmail;
 
             const asesor =
@@ -287,7 +319,7 @@ export default function Constancias() {
               todos.push({
                 id: `${doc.id}-int-${n}-${uid()}`,
                 nombre: n,
-                email: "", // generalmente no se captura el email de cada integrante
+                email: "", // usualmente no se captura email individual
                 equipo,
                 puesto: "Integrante",
               });
@@ -526,9 +558,9 @@ export default function Constancias() {
     try {
       if (!plantilla) throw new Error("Plantilla no disponible");
 
-      // Reglas de email de destino:
-      // - Integrante o Líder: preferir email del EQUIPO si existe, si no, usar email personal.
-      // - Otros roles: usar email personal y si no, el del equipo (si existe).
+      // Preferencias de email:
+      // - Integrante/Líder → email de equipo si existe; si no, personal.
+      // - Otros roles → personal; si no, email de equipo.
       const preferTeam = p.puesto === "Integrante" || p.puesto === "Líder";
       const teamEmail = pickTeamEmailFor(p);
       const toEmail = preferTeam ? (teamEmail || p.email || "") : (p.email || teamEmail || "");
@@ -686,12 +718,6 @@ export default function Constancias() {
                 </option>
               ))}
             </select>
-            {!!plantilla && (
-              <p className="text-[11px] text-gray-500 mt-1 flex flex-wrap gap-1">
-                {["Arrastra tokens disponibles a Asunto o Mensaje:"].length > 0 &&
-                  null /* Mantén tu UI de tokens si ya la tienes */}
-              </p>
-            )}
           </div>
         </div>
       </Card>
@@ -813,8 +839,6 @@ export default function Constancias() {
           Puedes usar tokens (p. ej. <code>{"{{NOMBRE}}"}</code>, <code>{"{{CONCURSO}}"}</code>, <code>{"{{FECHA}}"}</code>).
           {" "}Arrástralos a los campos de Asunto o Mensaje.
         </p>
-
-        {/* ... aquí puedes mantener tu UI de tokens si la tenías ... */}
 
         <div className="grid md:grid-cols-2 gap-3 mt-3">
           <div>
