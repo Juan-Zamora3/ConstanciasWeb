@@ -12,13 +12,15 @@ import {
   deleteDoc,
   doc as fsDoc,
   getDocs,
+  getDoc,
   query,
   serverTimestamp,
   updateDoc,
   where,
-    setDoc, // 👈 NUEVO
+  setDoc,
 } from "firebase/firestore"
 import { pagarEquipo } from "../pages/Asistencias"
+
 /* ===== Tipos mínimos ===== */
 export type Concurso = {
   id: string
@@ -89,6 +91,61 @@ function mergeWithLeaderNames(integrantes: string[] = [], lider?: string) {
   if (l && !out.some((n) => n.trim().toLowerCase() === l.toLowerCase())) out.push(l)
   return out
 }
+
+/* ===== Helpers Firestore → opciones ===== */
+const toStringArray = (value: any): string[] => {
+  if (!value) return []
+  if (Array.isArray(value)) return value.map((v) => String(v)).filter(Boolean)
+  if (typeof value === "object") return Object.values(value).map((v) => String(v)).filter(Boolean)
+  return []
+}
+
+// Busca recursivamente un combobox con ese título
+const findComboOptions = (node: any, tituloBuscado: string): string[] => {
+  const wanted = tituloBuscado.toLowerCase()
+  const visit = (n: any): string[] => {
+    if (!n) return []
+    if (Array.isArray(n)) {
+      for (const el of n) {
+        const r = visit(el)
+        if (r.length) return r
+      }
+      return []
+    }
+    if (typeof n === "object") {
+      const tipo = String(n?.tipo || n?.type || "").toLowerCase()
+      const titulo = String(n?.titulo || n?.title || "").toLowerCase()
+      if (tipo === "combobox" && titulo === wanted) {
+        const ops = n?.opciones || n?.options
+        return toStringArray(ops)
+      }
+      for (const k of Object.keys(n)) {
+        const r = visit(n[k])
+        if (r.length) return r
+      }
+    }
+    return []
+  }
+  return visit(node)
+}
+
+// Junta categorías desde mil formas/rutas posibles
+const collectCategoriasFromAny = (src: any): string[] => {
+  const set = new Set<string>()
+  const push = (v: any) => toStringArray(v).forEach((s) => set.add(String(s).trim()))
+  if (!src) return []
+  push(src?.categorias)
+  push(src?.categoria)
+  push(src?.Categorias)
+  push(src?.config?.categorias)
+  push(src?.Campos?.categorias)
+  push(src?.camposPreestablecidos?.categoria?.opciones)
+  // combobox “Categoría/Categoria”
+  findComboOptions(src, "Categoría").forEach((s) => set.add(s))
+  findComboOptions(src, "Categoria").forEach((s) => set.add(s))
+  return Array.from(set).filter(Boolean)
+}
+
 /* ===== Componente ===== */
 export default function ModalEquipos({
   open,
@@ -118,7 +175,7 @@ export default function ModalEquipos({
   const [isEditing, setIsEditing] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
   const [savingAdd, setSavingAdd] = useState(false)
-  const [snapshotEq, setSnapshotEq] = useState<Equipo | null>(null) // para Cancelar
+  const [snapshotEq, setSnapshotEq] = useState<Equipo | null>(null)
 
   // campos añadir rápido
   const [aNombreEquipo, setANombreEquipo] = useState("")
@@ -132,33 +189,126 @@ export default function ModalEquipos({
   const [aEscolaridad, setAEscolaridad] = useState("")
   const [aPagado, setAPagado] = useState(false)
 
-  useEffect(() => { setLista(equiposProp || []) }, [equiposProp])
+  // Opciones para los combos
+  const [categoriasCurso, setCategoriasCurso] = useState<string[]>([])
+  const [escolaridadOpts, setEscolaridadOpts] = useState<string[]>([])
+
+  // Filtro de categorías (combo "Todas las categorías")
+  const [filterCat, setFilterCat] = useState<string>("")
+
+  // Categorías para UI = (de Firestore) ∪ (las que ya están en equipos)
+  const categoriasUI = useMemo(() => {
+    const s = new Set<string>()
+    categoriasCurso.forEach((c) => c && s.add(c))
+    lista.forEach((e) => e?.categoria && s.add(String(e.categoria)))
+    return Array.from(s).sort((a, b) => a.localeCompare(b, "es"))
+  }, [categoriasCurso, lista])
+
+  useEffect(() => {
+    setLista(equiposProp || [])
+  }, [equiposProp])
 
   useEffect(() => {
     (async () => {
       if (!open || !concurso?.id) return
+
+      // 1) Encuestas del curso
       try {
         const qEnc = query(collection(db, "encuestas"), where("cursoId", "==", concurso.id))
         const snap = await getDocs(qEnc)
         const rows = snap.docs.map((d) => ({ id: d.id, titulo: (d.data() as any)?.titulo || d.id }))
         setEncuestas(rows)
         setEncuestaDestino(rows[0]?.id || "")
-      } catch {
-        setEncuestas([]); setEncuestaDestino("")
+      } catch (e) {
+        console.warn("[ModalEquipos] leer encuestas:", e)
+        setEncuestas([])
+        setEncuestaDestino("")
+      }
+
+      // 2) CATEGORÍAS + ESCOLARIDAD
+      try {
+        const catsSet = new Set<string>()
+        let escolCurso: string[] = []
+
+        // 2.1 doc del curso
+        const cursoSnap = await getDoc(fsDoc(db, "Cursos", concurso.id))
+        if (cursoSnap.exists()) {
+          const data: any = cursoSnap.data()
+          collectCategoriasFromAny(data).forEach((c) => catsSet.add(c))
+          // Escolaridad (si existiera en cualquier lado)
+          escolCurso = findComboOptions(
+            { preguntasPersonalizadas: data?.preguntasPersonalizadas, campos: data?.campos, preguntas: data?.preguntas, extras: data?.extras, root: data },
+            "Escolaridad"
+          )
+          if (!escolCurso.length) escolCurso = toStringArray(data?.escolaridadOpciones)
+        }
+
+        // 2.2 subdoc config opcional
+        try {
+          const confSnap = await getDoc(fsDoc(db, "Cursos", concurso.id, "config", "config"))
+          if (confSnap.exists()) collectCategoriasFromAny(confSnap.data()).forEach((c) => catsSet.add(c))
+        } catch {}
+
+        // 2.3 subcolección /categorias
+        try {
+          const catsCol = await getDocs(collection(db, "Cursos", concurso.id, "categorias"))
+          catsCol.forEach((d) => {
+            const dd: any = d.data() || {}
+            const name = dd.nombre || dd.titulo || dd.name || d.id
+            if (name) catsSet.add(String(name))
+          })
+        } catch {}
+
+        // 2.4 recorrer encuestas del curso
+        try {
+          const encSnap = await getDocs(query(collection(db, "encuestas"), where("cursoId", "==", concurso.id)))
+          encSnap.forEach((d) => {
+            const dd: any = d.data() || {}
+            collectCategoriasFromAny(dd).forEach((c) => catsSet.add(c))
+          })
+        } catch (e) {
+          console.warn("[ModalEquipos] categorías desde encuestas:", e)
+        }
+
+        const catsFinal = Array.from(catsSet)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b, "es"))
+
+        setCategoriasCurso(catsFinal)
+        setEscolaridadOpts(escolCurso)
+
+        // Defaults seguros
+        setACategoria((prev) => (prev && catsFinal.includes(prev) ? prev : catsFinal[0] || ""))
+        setAEscolaridad((prev) => (prev && escolCurso.includes(prev) ? prev : escolCurso[0] || ""))
+
+        console.log("[ModalEquipos] categorias =>", catsFinal, "escolaridad =>", escolCurso)
+      } catch (e) {
+        console.warn("[ModalEquipos] opciones curso/encuestas:", e)
+        setCategoriasCurso([])
+        setEscolaridadOpts([])
       }
     })()
   }, [open, concurso?.id])
 
+  // Si no hay categoría elegida en "añadir" y ya hay categorías, pone la primera
+  useEffect(() => {
+    if (!aCategoria && categoriasUI.length) setACategoria(categoriasUI[0])
+  }, [categoriasUI]) // usamos la unificada
+
   const filtrados = useMemo(() => {
     const t = busq.trim().toLowerCase()
-    if (!t) return lista
-    return lista.filter((eq) =>
-      [eq.nombreEquipo, eq.nombreLider, eq.categoria, (eq.integrantes || []).join(" "), eq.institucion]
-        .join(" ")
-        .toLowerCase()
-        .includes(t)
-    )
-  }, [busq, lista])
+    return lista.filter((eq) => {
+      const matchesText =
+        !t ||
+        [eq.nombreEquipo, eq.nombreLider, eq.categoria, (eq.integrantes || []).join(" "), eq.institucion]
+          .join(" ")
+          .toLowerCase()
+          .includes(t)
+      const matchesCat = !filterCat || eq.categoria === filterCat
+      return matchesText && matchesCat
+    })
+  }, [busq, filterCat, lista])
 
   const totalParticipantes = useMemo(() => {
     return filtrados.reduce((acc, eq) => {
@@ -168,101 +318,94 @@ export default function ModalEquipos({
     }, 0)
   }, [filtrados])
 
-const togglePagado = async (eq: Equipo, val: boolean) => {
-  if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
-  const equipoDocId = eq._respId || eq.id
+  const togglePagado = async (eq: Equipo, val: boolean) => {
+    if (!eq._encuestaId || !eq._respId) return alert("No se puede actualizar este registro.")
+    const equipoDocId = eq._respId || eq.id
 
-  try {
-    if (val) {
-      if (!concurso?.id) return alert("Falta el cursoId para registrar el pago.")
-      const miembros = mergeWithLeaderNames(eq.integrantes, eq.nombreLider)
+    try {
+      if (val) {
+        if (!concurso?.id) return alert("Falta el cursoId para registrar el pago.")
+        const miembros = mergeWithLeaderNames(eq.integrantes, eq.nombreLider)
 
-      // 1) Fallback inmediato en Asistencias (por si pagarEquipo falla o se demora)
-      await setDoc(
-        fsDoc(db, "Cursos", concurso.id, "asistencias", equipoDocId),
-        {
-          cursoId: concurso.id,
-          cursoNombre: concurso?.nombre || "Curso",
-          equipoId: equipoDocId,
-          nombreEquipo: eq.nombreEquipo,
-          updatedAt: serverTimestamp(),
-          asistencia: {
-            presentes: miembros,
-            totalPresentes: miembros.length,
-            integrantesTotales: miembros.length,
-          },
-          pago: {
-            requierePago: true,
-            cuotaEquipo: 100,           // 👈 ajusta si tu cuota es otra
-            totalEsperado: 100,
-            montoEntregado: 100,
-            cambioEntregado: 0,
-            netoCobrado: 100,
-            aplicadoAEsperado: 100,
-            faltante: 0,
-            metodo: "Efectivo",
-            folio: null,
-            pagado: true,
-            fechaPago: serverTimestamp(),
-          },
-          categoria: eq.categoria || null,
-          nombreLider: eq.nombreLider || null,
-          contactoEquipo: eq.contactoEquipo || null,
-          institucion: eq.institucion || null,
-        },
-        { merge: true }
-      )
-
-      // 2) Registro “bonito” usando tu helper (deja todo coherente)
-      await pagarEquipo({
-        cursoId: concurso.id,
-        cursoNombre: concurso?.nombre || "Curso",
-        equipo: {
-          id: equipoDocId,
-          nombreEquipo: eq.nombreEquipo,
-          integrantes: miembros,
-          nombreLider: eq.nombreLider,
-          categoria: eq.categoria,
-          contactoEquipo: eq.contactoEquipo,
-          institucion: eq.institucion,
-        },
-        presentes: miembros,
-        cuota: 100,                      // 👈 ajusta si tu cuota es otra
-        metodo: "Efectivo",
-      })
-    } else {
-      // Desmarcar: deja explícitamente pagado:false y limpia importes
-      if (concurso?.id) {
         await setDoc(
           fsDoc(db, "Cursos", concurso.id, "asistencias", equipoDocId),
           {
-            pago: {
-              pagado: false,
-              montoEntregado: 0,
-              netoCobrado: 0,
-              aplicadoAEsperado: 0,
-              cambioEntregado: 0,
-              faltante: 0,
+            cursoId: concurso.id,
+            cursoNombre: concurso?.nombre || "Curso",
+            equipoId: equipoDocId,
+            nombreEquipo: eq.nombreEquipo,
+            updatedAt: serverTimestamp(),
+            asistencia: {
+              presentes: miembros,
+              totalPresentes: miembros.length,
+              integrantesTotales: miembros.length,
             },
+            pago: {
+              requierePago: true,
+              cuotaEquipo: 100,
+              totalEsperado: 100,
+              montoEntregado: 100,
+              cambioEntregado: 0,
+              netoCobrado: 100,
+              aplicadoAEsperado: 100,
+              faltante: 0,
+              metodo: "Efectivo",
+              folio: null,
+              pagado: true,
+              fechaPago: serverTimestamp(),
+            },
+            categoria: eq.categoria || null,
+            nombreLider: eq.nombreLider || null,
+            contactoEquipo: eq.contactoEquipo || null,
+            institucion: eq.institucion || null,
           },
           { merge: true }
         )
+
+        await pagarEquipo({
+          cursoId: concurso.id,
+          cursoNombre: concurso?.nombre || "Curso",
+          equipo: {
+            id: equipoDocId,
+            nombreEquipo: eq.nombreEquipo,
+            integrantes: miembros,
+            nombreLider: eq.nombreLider,
+            categoria: eq.categoria,
+            contactoEquipo: eq.contactoEquipo,
+            institucion: eq.institucion,
+          },
+          presentes: miembros,
+          cuota: 100,
+          metodo: "Efectivo",
+        })
+      } else {
+        if (concurso?.id) {
+          await setDoc(
+            fsDoc(db, "Cursos", concurso.id, "asistencias", equipoDocId),
+            {
+              pago: {
+                pagado: false,
+                montoEntregado: 0,
+                netoCobrado: 0,
+                aplicadoAEsperado: 0,
+                cambioEntregado: 0,
+                faltante: 0,
+              },
+            },
+            { merge: true }
+          )
+        }
       }
+
+      await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
+
+      setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
+      setDetailEq((curr) => (curr && curr._respId === eq._respId ? { ...curr, pagado: val } : curr))
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo actualizar el estado de pago.")
     }
-
-    // Refleja en la respuesta de la encuesta
-    await updateDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId), { pagado: val })
-
-    // Actualiza UI local
-    setLista((prev) => prev.map((x) => (x._respId === eq._respId ? { ...x, pagado: val } : x)))
-    setDetailEq((curr) => (curr && curr._respId === eq._respId ? { ...curr, pagado: val } : curr))
-  } catch (e) {
-    console.error(e)
-    alert("No se pudo actualizar el estado de pago.")
   }
-}
-
-
 
   const eliminarEquipo = async (eq: Equipo) => {
     if (!eq._encuestaId || !eq._respId) return alert("No se puede eliminar este registro.")
@@ -270,239 +413,199 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
     try {
       await deleteDoc(fsDoc(db, "encuestas", eq._encuestaId, "respuestas", eq._respId))
       setLista((prev) => prev.filter((x) => x._respId !== eq._respId))
-      setDetailEq(null); setIsEditing(false)
+      setDetailEq(null)
+      setIsEditing(false)
     } catch {
       alert("No se pudo eliminar.")
     }
   }
 
   const guardarEdicion = async () => {
-  if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
-  try {
-    setSavingEdit(true)
+    if (!detailEq || !detailEq._encuestaId || !detailEq._respId) return
+    try {
+      setSavingEdit(true)
 
-    const patch: any = {
-      preset: {
-        nombreEquipo: detailEq.nombreEquipo || "",
-        nombreLider: detailEq.nombreLider || "",
-        contactoEquipo: detailEq.contactoEquipo || "",
-        categoria: detailEq.categoria || "",
-        integrantes: Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
-      },
-      custom: {
-        p1: detailEq.maestroAsesor || "",
-        p2: detailEq.institucion || "",
-        p3: detailEq.telefono || "",
-        p4: detailEq.escolaridad || "",
-      },
-      pagado: !!detailEq.pagado,
-    }
+      const patch: any = {
+        preset: {
+          nombreEquipo: detailEq.nombreEquipo || "",
+          nombreLider: detailEq.nombreLider || "",
+          contactoEquipo: detailEq.contactoEquipo || "",
+          categoria: detailEq.categoria || "",
+          integrantes: Array.isArray(detailEq.integrantes) ? detailEq.integrantes : [],
+        },
+        custom: {
+          p1: detailEq.maestroAsesor || "",
+          p2: detailEq.institucion || "",
+          p3: detailEq.telefono || "",
+          p4: detailEq.escolaridad || "",
+        },
+        pagado: !!detailEq.pagado,
+      }
 
-    const encDocRef = fsDoc(
-      db,
-      "encuestas",
-      detailEq._encuestaId,
-      "respuestas",
-      detailEq._respId
-    )
+      const encDocRef = fsDoc(db, "encuestas", detailEq._encuestaId, "respuestas", detailEq._respId)
 
-    // 1) Guardar edición en la respuesta
-    await updateDoc(encDocRef, patch)
+      await updateDoc(encDocRef, patch)
 
-    // 2) Sincronizar "pagado" con Asistencias
-    if (patch.pagado) {
-      if (!concurso?.id) {
-        alert("Se marcó como pagado, pero falta cursoId para reflejarlo en Asistencias.")
+      if (patch.pagado) {
+        if (!concurso?.id) {
+          alert("Se marcó como pagado, pero falta cursoId para reflejarlo en Asistencias.")
+        } else {
+          const miembros = mergeWithLeaderNames(patch.preset.integrantes, patch.preset.nombreLider)
+          try {
+            await pagarEquipo({
+              cursoId: concurso.id,
+              cursoNombre: concurso?.nombre || "Curso",
+              equipo: {
+                id: detailEq._respId,
+                nombreEquipo: patch.preset.nombreEquipo,
+                integrantes: miembros,
+                nombreLider: patch.preset.nombreLider,
+                categoria: patch.preset.categoria,
+                contactoEquipo: patch.preset.contactoEquipo,
+                institucion: patch.custom.p2,
+              },
+              presentes: miembros,
+              cuota: 100,
+              metodo: "Efectivo",
+            })
+          } catch (e) {
+            console.error(e)
+            await updateDoc(encDocRef, { pagado: false })
+            patch.pagado = false
+            alert("No se pudo registrar el pago en Asistencias. 'Pagado' fue revertido.")
+          }
+        }
       } else {
-        const miembros = mergeWithLeaderNames(
-          patch.preset.integrantes,
-          patch.preset.nombreLider
-        )
-        try {
-          await pagarEquipo({
-            cursoId: concurso.id,
-            cursoNombre: concurso?.nombre || "Curso",
-            equipo: {
-              id: detailEq._respId, // usamos el id de la respuesta como id del equipo en asistencias
-              nombreEquipo: patch.preset.nombreEquipo,
-              integrantes: miembros,
-              nombreLider: patch.preset.nombreLider,
-              categoria: patch.preset.categoria,
-              contactoEquipo: patch.preset.contactoEquipo,
-              institucion: patch.custom.p2,
-            },
-            presentes: miembros, // asegura asistencia > 0
-            cuota: 100,          // ⚠️ ajusta si tu cuota real es otra
-            metodo: "Efectivo",
-          })
-        } catch (e) {
-          console.error(e)
-          // Revertir "pagado" si falló registrar el pago en Asistencias
-          await updateDoc(encDocRef, { pagado: false })
-          patch.pagado = false
-          alert("No se pudo registrar el pago en Asistencias. 'Pagado' fue revertido.")
+        if (concurso?.id) {
+          await setDoc(fsDoc(db, "Cursos", concurso.id, "asistencias", detailEq._respId), { pago: { pagado: false } }, { merge: true })
         }
       }
-    } else {
-      // Desmarcado: reflejar en Asistencias que ya no está pagado
-      if (concurso?.id) {
-        await setDoc(
-          fsDoc(db, "Cursos", concurso.id, "asistencias", detailEq._respId),
-          { pago: { pagado: false } },
-          { merge: true }
-        )
-      }
-    }
 
-    // 3) Actualizar UI local
-    setLista((prev) =>
-      prev.map((x) =>
-        x._respId === detailEq._respId ? { ...x, ...detailEq, pagado: patch.pagado } : x
+      setLista((prev) =>
+        prev.map((x) => (x._respId === detailEq._respId ? { ...x, ...detailEq, pagado: patch.pagado } : x))
       )
-    )
-    setIsEditing(false)
-    setSnapshotEq({ ...detailEq, pagado: patch.pagado })
-  } finally {
-    setSavingEdit(false)
+      setIsEditing(false)
+      setSnapshotEq({ ...detailEq, pagado: patch.pagado })
+    } finally {
+      setSavingEdit(false)
+    }
   }
-}
-
 
   const cancelarEdicion = () => {
     if (snapshotEq) setDetailEq(snapshotEq)
     setIsEditing(false)
   }
 
- const añadirRapido = async () => {
-  if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
-  try {
-    setSavingAdd(true)
+  const añadirRapido = async () => {
+    if (!encuestaDestino) return alert("Selecciona una encuesta destino.")
+    try {
+      setSavingAdd(true)
 
-    // Parseo de integrantes
-    const integrantes = aIntegrantes
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
+      const integrantes = aIntegrantes.split(",").map((s) => s.trim()).filter(Boolean)
 
-    // Documento base en respuestas de la encuesta
-    const payload = {
-      createdAt: serverTimestamp(),
-      submittedAt: serverTimestamp(),
-      pagado: aPagado,
-      preset: {
-        nombreEquipo: aNombreEquipo.trim() || "Equipo",
-        nombreLider: aNombreLider.trim() || "",
-        contactoEquipo: aEmail.trim() || "",
-        categoria: aCategoria.trim() || "",
+      const payload = {
+        createdAt: serverTimestamp(),
+        submittedAt: serverTimestamp(),
+        pagado: aPagado,
+        preset: {
+          nombreEquipo: aNombreEquipo.trim() || "Equipo",
+          nombreLider: aNombreLider.trim() || "",
+          contactoEquipo: aEmail.trim() || "",
+          categoria: aCategoria.trim() || "",
+          integrantes,
+        },
+        custom: {
+          p1: aAsesor.trim() || "",
+          p2: aInstitucion.trim() || "",
+          p3: aTelefono.trim() || "",
+          p4: aEscolaridad.trim() || "",
+        },
+      }
+
+      const refDoc = await addDoc(collection(db, "encuestas", encuestaDestino, "respuestas"), payload)
+
+      const nuevo: Equipo = {
+        id: refDoc.id,
+        _respId: refDoc.id,
+        _encuestaId: encuestaDestino,
+        pagado: aPagado,
+        nombreEquipo: payload.preset.nombreEquipo,
+        nombreLider: payload.preset.nombreLider,
         integrantes,
-      },
-      custom: {
-        p1: aAsesor.trim() || "",
-        p2: aInstitucion.trim() || "",
-        p3: aTelefono.trim() || "",
-        p4: aEscolaridad.trim() || "",
-      },
-    }
+        contactoEquipo: payload.preset.contactoEquipo,
+        categoria: payload.preset.categoria,
+        submittedAt: new Date().toISOString(),
+        maestroAsesor: payload.custom.p1,
+        institucion: payload.custom.p2,
+        telefono: payload.custom.p3,
+        escolaridad: payload.custom.p4,
+      }
+      setLista((prev) => [nuevo, ...prev])
 
-    // 1) Guardar respuesta
-    const refDoc = await addDoc(
-      collection(db, "encuestas", encuestaDestino, "respuestas"),
-      payload
-    )
-
-    // 2) Insertar en la lista local
-    const nuevo: Equipo = {
-      id: refDoc.id,
-      _respId: refDoc.id,
-      _encuestaId: encuestaDestino,
-      pagado: aPagado,
-      nombreEquipo: payload.preset.nombreEquipo,
-      nombreLider: payload.preset.nombreLider,
-      integrantes,
-      contactoEquipo: payload.preset.contactoEquipo,
-      categoria: payload.preset.categoria,
-      submittedAt: new Date().toISOString(),
-      maestroAsesor: payload.custom.p1,
-      institucion: payload.custom.p2,
-      telefono: payload.custom.p3,
-      escolaridad: payload.custom.p4,
-    }
-    setLista((prev) => [nuevo, ...prev])
-
-    // 3) Si se marcó como pagado, reflejar también en Asistencias
-    if (aPagado) {
-      if (!concurso?.id) {
-        alert(
-          "Se marcó como pagado, pero no tengo cursoId para reflejarlo en Asistencias."
-        )
-      } else {
-        const miembros = mergeWithLeaderNames(integrantes, aNombreLider)
-        try {
-          await pagarEquipo({
-            cursoId: concurso.id,
-            cursoNombre: concurso?.nombre || "Curso",
-            equipo: {
-              id: refDoc.id, // usamos el id de la respuesta como id en asistencias
-              nombreEquipo: payload.preset.nombreEquipo,
-              integrantes: miembros,
-              nombreLider: payload.preset.nombreLider,
-              categoria: payload.preset.categoria,
-              contactoEquipo: payload.preset.contactoEquipo,
-              institucion: payload.custom.p2,
-            },
-            presentes: miembros, // asegura asistencia > 0
-            cuota: 100,          // 👈 ajusta si tu cuota es otra
-            metodo: "Efectivo",
-          })
-        } catch (e) {
-          console.error(e)
-          // Si falló registrar el pago, revertimos a "pendiente" en la respuesta y en UI
-          await updateDoc(
-            fsDoc(db, "encuestas", encuestaDestino, "respuestas", refDoc.id),
-            { pagado: false }
-          )
-          setLista((prev) =>
-            prev.map((x) => (x._respId === refDoc.id ? { ...x, pagado: false } : x))
-          )
-          alert(
-            "El equipo se añadió, pero no se pudo registrar el pago en Asistencias. Quedó como Pendiente."
-          )
+      if (aPagado) {
+        if (!concurso?.id) {
+          alert("Se marcó como pagado, pero no tengo cursoId para reflejarlo en Asistencias.")
+        } else {
+          const miembros = mergeWithLeaderNames(integrantes, aNombreLider)
+          try {
+            await pagarEquipo({
+              cursoId: concurso.id,
+              cursoNombre: concurso?.nombre || "Curso",
+              equipo: {
+                id: refDoc.id,
+                nombreEquipo: payload.preset.nombreEquipo,
+                integrantes: miembros,
+                nombreLider: payload.preset.nombreLider,
+                categoria: payload.preset.categoria,
+                contactoEquipo: payload.preset.contactoEquipo,
+                institucion: payload.custom.p2,
+              },
+              presentes: miembros,
+              cuota: 100,
+              metodo: "Efectivo",
+            })
+          } catch (e) {
+            console.error(e)
+            await updateDoc(fsDoc(db, "encuestas", encuestaDestino, "respuestas", refDoc.id), { pagado: false })
+            setLista((prev) => prev.map((x) => (x._respId === refDoc.id ? { ...x, pagado: false } : x)))
+            alert("El equipo se añadió, pero no se pudo registrar el pago en Asistencias. Quedó como Pendiente.")
+          }
         }
       }
+
+      setANombreEquipo("")
+      setANombreLider("")
+      setAEmail("")
+      setACategoria("")
+      setAIntegrantes("")
+      setAAsesor("")
+      setAInstitucion("")
+      setATelefono("")
+      setAEscolaridad("")
+      setAPagado(false)
+      setAddingOpen(false)
+    } catch (e) {
+      console.error(e)
+      alert("No se pudo añadir el equipo.")
+    } finally {
+      setSavingAdd(false)
     }
-
-    // 4) Reset de campos y cerrar bloque
-    setANombreEquipo("")
-    setANombreLider("")
-    setAEmail("")
-    setACategoria("")
-    setAIntegrantes("")
-    setAAsesor("")
-    setAInstitucion("")
-    setATelefono("")
-    setAEscolaridad("")
-    setAPagado(false)
-    setAddingOpen(false)
-  } catch (e) {
-    console.error(e)
-    alert("No se pudo añadir el equipo.")
-  } finally {
-    setSavingAdd(false)
   }
-}
-
 
   useEffect(() => {
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      if (detailEq) { setDetailEq(null); setIsEditing(false); return }
-      onClose()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (detailEq) {
+          setDetailEq(null)
+          setIsEditing(false)
+          return
+        }
+        onClose()
+      }
     }
-  }
-  window.addEventListener("keydown", onKey)
-  return () => window.removeEventListener("keydown", onKey)
-}, [detailEq, onClose])
-
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [detailEq, onClose])
 
   if (!open) return null
 
@@ -552,10 +655,12 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
 
           {/* contenido scrollable */}
           <div className="p-5 space-y-4 max-h-[78vh] overflow-auto">
-            {/* Barra superior: búsqueda + contadores + añadir rápido */}
-            <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <div className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto ring-1 ring-gray-200
-                                focus-within:ring-tecnm-azul/35`}>
+            {/* Barra superior */}
+            <div className="flex flex-col gap-2 md:flex-row md:items-center">
+              <div
+                className={`${pill} flex items-center gap-2 bg-white px-3 py-2 shadow-inner w-full md:w-auto ring-1 ring-gray-200
+                                focus-within:ring-tecnm-azul/35`}
+              >
                 <svg width="18" height="18" viewBox="0 0 24 24" className="opacity-70">
                   <path d="M21 21l-4.35-4.35m1.35-4.65a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
                 </svg>
@@ -566,6 +671,18 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                   className="w-full md:w-80 outline-none text-sm bg-transparent"
                 />
               </div>
+
+              {/* Combo: Todas las categorías */}
+              <select
+                className={`${pill} px-3 py-2 text-sm ring-1 ring-gray-200 bg-white`}
+                value={filterCat}
+                onChange={(e) => setFilterCat(e.target.value)}
+              >
+                <option value="">Todas las categorías</option>
+                {categoriasUI.map((c, i) => (
+                  <option key={`${c}__${i}`} value={c}>{c}</option>
+                ))}
+              </select>
 
               <div className="flex items-center gap-2 text-xs">
                 <span className={`${pill} px-3 py-1 text-slate-700 ring-1 ring-slate-200`}>Equipos: <strong className="ml-1">{filtrados.length}</strong></span>
@@ -591,8 +708,8 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                       onChange={(e) => setEncuestaDestino(e.target.value)}
                     >
                       {encuestas.length === 0
-                        ? <option value="">(No hay encuestas para este curso)</option>
-                        : encuestas.map((e) => <option key={e.id} value={e.id}>{e.titulo || e.id}</option>)
+                        ? <option key="ph" value="">(No hay encuestas para este curso)</option>
+                        : encuestas.map((e, i) => <option key={`${e.id}__${i}`} value={e.id}>{e.titulo || e.id}</option>)
                       }
                     </select>
                   </div>
@@ -617,7 +734,16 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Categoría</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aCategoria} onChange={(e) => setACategoria(e.target.value)} />
+                    <select
+                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      value={aCategoria}
+                      onChange={(e) => setACategoria(e.target.value)}
+                    >
+                      <option key="ph" value="">{categoriasUI.length ? "Selecciona…" : "(sin categorías definidas)"}</option>
+                      {categoriasUI.map((c, i) => (
+                        <option key={`${c}__${i}`} value={c}>{c}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="md:col-span-2">
                     <label className="text-xs text-gray-600">Integrantes (separados por coma)</label>
@@ -637,7 +763,16 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                   </div>
                   <div>
                     <label className="text-xs text-gray-600">Escolaridad</label>
-                    <input className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" value={aEscolaridad} onChange={(e) => setAEscolaridad(e.target.value)} />
+                    <select
+                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      value={aEscolaridad}
+                      onChange={(e) => setAEscolaridad(e.target.value)}
+                    >
+                      <option key="ph" value="">{escolaridadOpts.length ? "Selecciona…" : "(sin opciones definidas)"}</option>
+                      {escolaridadOpts.map((o, i) => (
+                        <option key={`${o}__${i}`} value={o}>{o}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
@@ -666,13 +801,9 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                     <Card
                       key={eq.id}
                       className="relative p-4 rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm hover:shadow-lg hover:ring-tecnm-azul/30 transition cursor-pointer"
-                      onClick={() => {
-                        setDetailEq(eq)
-                        setSnapshotEq(eq) // para cancelar luego
-                        setIsEditing(false)
-                      }}
+                      onClick={() => { setDetailEq(eq); setSnapshotEq(eq); setIsEditing(false) }}
                     >
-                      {/* chip pagado (no abre modal) */}
+                      {/* chip pagado */}
                       <label
                         className={`absolute top-2 right-2 z-10 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium
                                     border ring-1 shadow-sm
@@ -682,16 +813,10 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                         title="Marcar como pagado"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={!!eq.pagado}
-                          onChange={(e) => togglePagado(eq, e.target.checked)}
-                        />
+                        <input type="checkbox" className="h-4 w-4" checked={!!eq.pagado} onChange={(e) => togglePagado(eq, e.target.checked)} />
                         <span>{eq.pagado ? "Pagado" : "Pendiente"}</span>
                       </label>
 
-                      {/* contenido compacto */}
                       <div className="flex items-start gap-3 mt-6">
                         <div className="h-11 w-11 shrink-0 grid place-items-center rounded-xl bg-gradient-to-br from-tecnm-azul/15 to-tecnm-azul/5 text-tecnm-azul font-bold">
                           {iniciales}
@@ -704,9 +829,7 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                           <p className="text-xs text-gray-600 mt-0.5 truncate">
                             Líder: {eq.nombreLider || "—"}{eq.institucion ? ` · ${eq.institucion}` : ""}
                           </p>
-                          {eq.contactoEquipo && (
-                            <p className="text-xs text-gray-500 truncate">{eq.contactoEquipo}</p>
-                          )}
+                          {eq.contactoEquipo && (<p className="text-xs text-gray-500 truncate">{eq.contactoEquipo}</p>)}
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-700">
                             <span className={`${pill} px-2.5 py-1 ring-1 ring-slate-200`}>{integrantesCount} integrantes</span>
                             {eq.submittedAt && (
@@ -725,16 +848,13 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
           </div>
         </div>
 
-        {/* Modal DETALLES (lectura) + switch a EDICIÓN */}
+        {/* Modal DETALLES */}
         <AnimatePresence>
           {detailEq && (
             <>
-              {/* Overlay: clic afuera cierra */}
               <motion.div
                 className="fixed inset-0 bg-slate-900/60 backdrop-blur"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 onClick={() => { setDetailEq(null); setIsEditing(false) }}
               />
               <motion.div
@@ -744,7 +864,6 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                 exit={{ opacity: 0, y: 8, scale: 0.98 }}
               >
                 <Card className="w-full max-w-2xl p-4 rounded-2xl ring-1 ring-slate-200 shadow-xl bg-white/95 backdrop-blur" onClick={(e)=>e.stopPropagation()}>
-                  {/* Encabezado compacto */}
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h3 className="text-base font-semibold truncate">Detalles del equipo</h3>
@@ -752,11 +871,14 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                         ID: {detailEq._respId || detailEq.id} {detailEq.submittedAt ? `· ${new Date(detailEq.submittedAt).toLocaleString()}` : ""}
                       </p>
                     </div>
-
                     <div className="flex items-center gap-2">
                       {!isEditing ? (
                         <>
-                          <Button variant="outline" size="sm" onClick={() => { setSnapshotEq(detailEq); setIsEditing(true) }}>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => { setSnapshotEq(detailEq); setIsEditing(true) }}
+                          >
                             Editar
                           </Button>
                           <Button
@@ -776,8 +898,6 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                           </Button>
                         </>
                       )}
-
-                      {/* ✕ cerrar */}
                       <button
                         aria-label="Cerrar"
                         onClick={() => { setDetailEq(null); setIsEditing(false) }}
@@ -789,85 +909,33 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
                     </div>
                   </div>
 
-
-                  {/* Cuerpo: misma grilla que “editar”, pero disabled si no está en edición */}
                   <div className="grid md:grid-cols-2 gap-2 mt-3">
                     <Field label="Nombre del equipo">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.nombreEquipo || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, nombreEquipo: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.nombreEquipo || ""} onChange={(e) => setDetailEq({ ...detailEq, nombreEquipo: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Nombre del líder">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.nombreLider || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, nombreLider: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.nombreLider || ""} onChange={(e) => setDetailEq({ ...detailEq, nombreLider: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Correo del equipo">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.contactoEquipo || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, contactoEquipo: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.contactoEquipo || ""} onChange={(e) => setDetailEq({ ...detailEq, contactoEquipo: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Categoría">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.categoria || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, categoria: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.categoria || ""} onChange={(e) => setDetailEq({ ...detailEq, categoria: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Integrantes (coma)">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={(detailEq.integrantes || []).join(", ")}
-                        onChange={(e) =>
-                          setDetailEq({
-                            ...detailEq,
-                            integrantes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                          })
-                        }
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={(detailEq.integrantes || []).join(", ")} onChange={(e) => setDetailEq({ ...detailEq, integrantes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} disabled={!isEditing} />
                     </Field>
                     <Field label="Maestro asesor">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.maestroAsesor || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, maestroAsesor: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.maestroAsesor || ""} onChange={(e) => setDetailEq({ ...detailEq, maestroAsesor: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Institución">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.institucion || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, institucion: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.institucion || ""} onChange={(e) => setDetailEq({ ...detailEq, institucion: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Teléfono">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.telefono || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, telefono: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.telefono || ""} onChange={(e) => setDetailEq({ ...detailEq, telefono: e.target.value })} disabled={!isEditing} />
                     </Field>
                     <Field label="Escolaridad">
-                      <input
-                        className="w-full rounded-xl border px-3 py-2 text-sm"
-                        value={detailEq.escolaridad || ""}
-                        onChange={(e) => setDetailEq({ ...detailEq, escolaridad: e.target.value })}
-                        disabled={!isEditing}
-                      />
+                      <input className="w-full rounded-xl border px-3 py-2 text-sm" value={detailEq.escolaridad || ""} onChange={(e) => setDetailEq({ ...detailEq, escolaridad: e.target.value })} disabled={!isEditing} />
                     </Field>
 
                     <div className="md:col-span-2 grid md:grid-cols-2 gap-2">
@@ -877,12 +945,7 @@ const togglePagado = async (eq: Equipo, val: boolean) => {
 
                     <div className="md:col-span-2">
                       <label className="text-sm text-gray-700 inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={!!detailEq.pagado}
-                          onChange={(e) => setDetailEq({ ...detailEq, pagado: e.target.checked })}
-                          disabled={!isEditing}
-                        />
+                        <input type="checkbox" checked={!!detailEq.pagado} onChange={(e) => setDetailEq({ ...detailEq, pagado: e.target.checked })} disabled={!isEditing} />
                         Pagado
                       </label>
                     </div>
