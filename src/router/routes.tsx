@@ -1,3 +1,4 @@
+// src/router/routes.tsx
 import { createBrowserRouter } from "react-router-dom"
 import AppLayout from "../layouts/AppLayout"
 
@@ -9,7 +10,7 @@ import Constancias from "../pages/Constancias"
 import Asistencias from "../pages/Asistencias"
 import FormularioBuilder from "../pages/FormularioBuilder"
 import FormularioPublico from "../pages/FormularioPublico"
-import FormularioPublicoBySlug from "../pages/FormularioPublicoByslug" // ← NUEVO
+import FormularioPublicoBySlug from "../pages/FormularioPublicoBySlug" // ✅ corregido (case-sensitive)
 
 // (opcionales) placeholders
 const Equipos = () => <div>Equipos (próximo)</div>
@@ -36,7 +37,7 @@ export const router = createBrowserRouter([
 
   // Público (SIN navbar)
   { path: "/formulario-publico/:encuestaId", element: <FormularioPublico /> },
-  { path: "/registro/:slug", element: <FormularioPublicoBySlug /> }, // ← NUEVO
+  { path: "/registro/:slug", element: <FormularioPublicoBySlug /> },
 
   // 404
   { path: "*", element: <div style={{ padding: 24 }}>Página no encontrada</div> },
