@@ -1054,45 +1054,58 @@ export default function Concursos() {
 }
 
 /* ---------------- Modal AÑADIR COORDINADOR ---------------- */
+/* ---------------- Modal AÑADIR COORDINADOR (GLOBAL) ---------------- */
 function AddCoordinadorModal({
   open,
   onClose,
-  curso,
+  curso, // puede venir o no; ya no lo usamos para guardar
 }: {
   open: boolean
   onClose: () => void
   curso: Concurso | null
 }) {
+  const TIPOS_CARGO = [
+    "Coordinación General",
+    "Coordinador de Promoción",
+    "Coordinación de Patrocinios",
+    "Coordinación de Logística",
+    "Coordinación de Constancias y Premios",
+    "Coordinador Técnico",
+    "Coordinador de Difusión",
+    "Colaborador en Coordinación",
+    "Colaborador de Logística",
+    "Colaborador en Sistema de registro Equipos participantes",
+    "Colaborador en el sistema generador de Constancias",
+    "Colaborador de Edecanes",
+    "Maestra de Ceremonias",
+    "Coordinador de Edecanes",
+  ] as const
+
   const [saving, setSaving] = useState(false)
   const [nombre, setNombre] = useState("")
   const [correo, setCorreo] = useState("")
-  const [cargo, setCargo] = useState("Coordinador")
-  const [telefono, setTelefono] = useState("")
+  const [cargo, setCargo] = useState<string>("Coordinación General")
 
   useEffect(() => {
     if (!open) {
       setNombre("")
       setCorreo("")
-      setCargo("Coordinador")
-      setTelefono("")
+      setCargo("Coordinación General")
     }
   }, [open])
 
   const guardar = async () => {
-    if (!curso) return
     if (!nombre.trim() || !correo.trim() || !cargo.trim()) {
       alert("Completa nombre, correo y cargo.")
       return
     }
     try {
       setSaving(true)
+      // 🔁 GUARDADO GLOBAL: sin cursoId ni concursoNombre
       await addDoc(collection(db, "coordinadores"), {
-        cursoId: curso.id,
-        concursoNombre: curso.nombre ?? "",
         nombre: nombre.trim(),
         email: correo.trim(),
         cargo: cargo.trim(),
-        telefono: telefono.trim() || null,
         creadoEn: serverTimestamp(),
       })
       onClose()
@@ -1104,11 +1117,18 @@ function AddCoordinadorModal({
     }
   }
 
-  if (!open || !curso) return null
+  // 👇 ya no exigimos curso; el modal puede abrirse desde cualquier lado
+  if (!open) return null
 
   return (
     <AnimatePresence>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" onClick={onClose} />
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1123,27 +1143,46 @@ function AddCoordinadorModal({
           </div>
 
           <div className="p-5 space-y-3">
-            {[
-              { label: "Nombre", type: "text", value: nombre, set: setNombre, ph: "Nombre completo" },
-              { label: "Correo", type: "email", value: correo, set: setCorreo, ph: "correo@ejemplo.com" },
-              { label: "Cargo", type: "text", value: cargo, set: setCargo, ph: "Coordinador" },
-              { label: "Teléfono", type: "tel", value: telefono, set: setTelefono, ph: "(xxx) xxx xxxx" },
-            ].map((f, i) => (
-              <div key={i}>
-                <label className="text-sm text-gray-600">{f.label}</label>
-                <input
-                  type={f.type}
-                  value={f.value}
-                  onChange={(e) => f.set(e.target.value)}
-                  placeholder={f.ph}
-                  className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
-                />
-              </div>
-            ))}
+            <div>
+              <label className="text-sm text-gray-600">Nombre</label>
+              <input
+                type="text"
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+                placeholder="Nombre completo"
+                className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+              />
+            </div>
+
+            <div>
+              <label className="text-sm text-gray-600">Correo</label>
+              <input
+                type="email"
+                value={correo}
+                onChange={(e) => setCorreo(e.target.value)}
+                placeholder="correo@ejemplo.com"
+                className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+              />
+            </div>
+
+            <div>
+              <label className="text-sm text-gray-600">Cargo</label>
+              <select
+                value={cargo}
+                onChange={(e) => setCargo(e.target.value)}
+                className={`${modalInset} mt-1 w-full px-3 py-2 outline-none focus:ring-2 focus:ring-tecnm-azul/20`}
+              >
+                {TIPOS_CARGO.map((op) => (
+                  <option key={op} value={op}>{op}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-200">
-            <Button variant="outline" className={`${pill} px-4 py-2`} onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button variant="outline" className={`${pill} px-4 py-2`} onClick={onClose} disabled={saving}>
+              Cancelar
+            </Button>
             <Button
               variant="solid"
               className="rounded-full px-5 py-2 text-white bg-gradient-to-r from-tecnm-azul to-tecnm-azul-700 shadow-soft"
@@ -1158,3 +1197,4 @@ function AddCoordinadorModal({
     </AnimatePresence>
   )
 }
+
