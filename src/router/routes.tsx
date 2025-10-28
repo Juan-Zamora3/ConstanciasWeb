@@ -26,9 +26,7 @@ export const router = createBrowserRouter([
       { path: "concursos", element: <Concursos /> },
       { path: "concursos/:concursoId/equipos", element: <Equipos /> },
       { path: "concursos/:concursoId/equipos/:equipoId/participantes", element: <Participantes /> },
-      { path: "plantillas", element: <Plantillas /> },
-      { path: "asistencias", element: <Asistencias /> },
-      { path: "constancias", element: <Constancias /> },
+
 
       // Builder (con navbar)
       { path: "formulario-builder/:encuestaId", element: <FormularioBuilder /> },
