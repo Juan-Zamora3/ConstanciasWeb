@@ -7,7 +7,7 @@ import Button from "../components/ui/Button";
 
 import { db } from "../servicios/firebaseConfig";
 
-// Firestore (solo lo necesario)
+// Firestore
 import {
   collection,
   onSnapshot,
@@ -45,7 +45,7 @@ type Participante = {
   nombre: string;
   email?: string;
   equipo?: string;
-  puesto?: string; // "Líder" | "Integrante" | "Asesor" | "Coordinador" | "Colaborador de Edecanes" | ...
+  puesto?: string;
 };
 
 type EstadoCorreo = "en-cola" | "enviado" | "error";
@@ -68,6 +68,8 @@ type LogCorreo = {
     };
   };
 };
+
+type SendMode = "individual" | "equipo_adjuntos" | "equipo_zip";
 
 /* =================== Helpers =================== */
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -151,6 +153,16 @@ const getTeamEmailFromResponse = (data: any, preset: any, custom: any): string =
   return "";
 };
 
+const groupByEquipo = (arr: Participante[]) => {
+  const map = new Map<string, Participante[]>();
+  for (const p of arr) {
+    const key = (p.equipo || "").trim();
+    if (!key) continue;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(p);
+  }
+  return map;
+};
 
 /* =================== Página =================== */
 export default function Constancias() {
@@ -179,13 +191,16 @@ export default function Constancias() {
 
   const [correoLogs, setCorreoLogs] = useState<LogCorreo[]>([]);
 
+  const [sendMode, setSendMode] = useState<SendMode>("individual");
+
   const [emailCfg, setEmailCfg] = useState(() => ({
     fromName: localStorage.getItem("mail.fromName") ?? "Constancias ISC-ITSPP",
     fromEmail: localStorage.getItem("mail.fromEmail") ?? "",
     subjectTpl: localStorage.getItem("mail.subjectTpl") ?? "Constancia - {{CONCURSO}} - {{NOMBRE}}",
+    // El backend NO agrega saludo/cierre. Esto es lo que va tal cual.
     bodyTpl:
       localStorage.getItem("mail.bodyTpl") ??
-      "Hola {{NOMBRE}},\n\nAdjuntamos tu constancia del {{CONCURSO}}.\n\n¡Gracias por tu participación!",
+      "Hola buen día,\nAdjuntamos tu constancia del equipo {{NOMBRE}}.\n\n¡Gracias por tu participación!",
   }));
 
   // refs para insertar tokens en caret
@@ -448,9 +463,21 @@ export default function Constancias() {
   };
 
   const tokensDisponibles = useMemo<string[]>(() => {
-    if (!plantilla) return ["{{NOMBRE}}", "{{CONCURSO}}", "{{FECHA}}"];
+    if (!plantilla) return ["{{NOMBRE}}", "{{CONCURSO}}", "{{FECHA}}", "{{MENSAJE}}"];
     return varsPorTipo[plantilla.tipo];
   }, [plantilla]);
+
+  // Valores actuales a partir del primer seleccionado o primero visible
+  const tokensPreview = useMemo<Record<string, string>>(() => {
+    if (!plantilla || !concursoSel) return {};
+    const base = seleccionados[0] || participantesFiltrados[0] || participantes[0];
+    if (!base) return {};
+    const destinatario =
+      plantilla.tipo === "Equipo"
+        ? { nombre: base.equipo || "", equipo: base.equipo || "", puesto: "Equipo" }
+        : { nombre: base.nombre, email: base.email, equipo: base.equipo, puesto: base.puesto };
+    return buildTokenMap({ plantilla, concurso: concursoSel, destinatario });
+  }, [plantilla, concursoSel, seleccionados, participantesFiltrados, participantes]);
 
   const persistEmailCfg = () => {
     localStorage.setItem("mail.fromName", emailCfg.fromName);
@@ -459,9 +486,14 @@ export default function Constancias() {
     localStorage.setItem("mail.bodyTpl", emailCfg.bodyTpl);
   };
 
-  /* ======= Drag & Drop de tokens ======= */
+  /* ======= Drag & Drop de tokens y valores ======= */
   const tokenDragStart = (t: string) => (e: React.DragEvent) => {
     e.dataTransfer.setData("text/plain", t);
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.dropEffect = "copy";
+  };
+  const valueDragStart = (v: string) => (e: React.DragEvent) => {
+    e.dataTransfer.setData("text/plain", v ?? "");
     e.dataTransfer.effectAllowed = "copy";
     e.dataTransfer.dropEffect = "copy";
   };
@@ -560,12 +592,43 @@ export default function Constancias() {
     }
   };
 
+  const getEmailForTeam = (team: string, miembros: Participante[]) => {
+    const teamEmail = normalizeEmail(teamEmailByName[team]);
+    if (teamEmail) return teamEmail;
+    const any = miembros.find((p) => normalizeEmail(p.email))?.email;
+    if (any) return normalizeEmail(any);
+    return "";
+  };
+
   const enviarSeleccionados = async () => {
     if (!plantilla || !concursoSel) return alert("Selecciona concurso y plantilla.");
     if (!tieneAlgoSeleccionado) return alert("Selecciona al menos un integrante.");
 
     setConfirmSendOpen(false);
-    for (const p of seleccionados) {
+
+    if (sendMode === "individual") {
+      for (const p of seleccionados) {
+        // eslint-disable-next-line no-await-in-loop
+        await enviarUno(p);
+      }
+      return;
+    }
+
+    // Por equipos
+    const grupos = groupByEquipo(seleccionados);
+    if (grupos.size === 0) {
+      alert("Nadie en la selección tiene equipo. Usa el modo Individual.");
+      return;
+    }
+
+    for (const [teamName, miembros] of grupos.entries()) {
+      // eslint-disable-next-line no-await-in-loop
+      await enviarEquipo(teamName, miembros);
+    }
+
+    // Para los que no tengan equipo (mezclados), mándalos individuales
+    const sinEquipo = seleccionados.filter((p) => !(p.equipo && p.equipo.trim()));
+    for (const p of sinEquipo) {
       // eslint-disable-next-line no-await-in-loop
       await enviarUno(p);
     }
@@ -585,11 +648,11 @@ export default function Constancias() {
       if (!toEmail) throw new Error("No hay email del equipo ni personal para el destinatario");
 
       const dest = { nombre: p.nombre, email: toEmail, equipo: p.equipo, puesto: p.puesto };
-      const tokens = buildTokenMap({ plantilla, concurso: concursoSel, destinatario: dest });
+      const tokens = buildTokenMap({ plantilla, concurso: concursoSel!, destinatario: dest });
       const subject = Object.entries(tokens).reduce((acc, [k, v]) => acc.replaceAll(k, v ?? ""), emailCfg.subjectTpl ?? "");
       const body = Object.entries(tokens).reduce((acc, [k, v]) => acc.replaceAll(k, v ?? ""), emailCfg.bodyTpl ?? "");
 
-      const bytes = await renderCertToPdfBytes({ plantilla, concurso: concursoSel, destinatario: dest });
+      const bytes = await renderCertToPdfBytes({ plantilla, concurso: concursoSel!, destinatario: dest });
       const b64 = u8ToBase64(bytes);
 
       const r = await fetch(api("/EnviarCorreo"), {
@@ -599,8 +662,9 @@ export default function Constancias() {
           Correo: toEmail,
           Nombres: p.nombre,
           Puesto: p.puesto || "",
+          Equipo: p.equipo || "",
           pdf: b64,
-          mensajeCorreo: body,
+          mensajeCorreo: body, // EXACTO lo que pusiste en el front
           Asunto: subject,
           FromEmail: emailCfg.fromEmail || undefined,
           FromName: emailCfg.fromName || undefined,
@@ -645,6 +709,141 @@ export default function Constancias() {
     }
   };
 
+  const enviarEquipo = async (teamName: string, miembros: Participante[]) => {
+    try {
+      if (!plantilla) throw new Error("Plantilla no disponible");
+
+      const toEmail = getEmailForTeam(teamName, miembros);
+      if (!toEmail) throw new Error(`No hay email para el equipo "${teamName}" (ni contactoEquipo ni correo personal)`);
+
+      const destTeam = { nombre: teamName, email: toEmail, equipo: teamName, puesto: "Equipo" as const };
+      const tokens = buildTokenMap({ plantilla, concurso: concursoSel!, destinatario: destTeam });
+      const subject = Object.entries(tokens).reduce((acc, [k, v]) => acc.replaceAll(k, v ?? ""), emailCfg.subjectTpl ?? "");
+      const body = Object.entries(tokens).reduce((acc, [k, v]) => acc.replaceAll(k, v ?? ""), emailCfg.bodyTpl ?? "");
+
+      // Generar archivos
+      const files: { filename: string; bytes: Uint8Array }[] = [];
+
+      if (plantilla.tipo === "Equipo") {
+        const bytes = await renderCertToPdfBytes({
+          plantilla,
+          concurso: concursoSel!,
+          destinatario: { nombre: teamName, equipo: teamName },
+        });
+        files.push({ filename: `${sanitize(plantilla.nombre)}_${sanitize(teamName)}.pdf`, bytes });
+      } else {
+        for (const p of miembros) {
+          // eslint-disable-next-line no-await-in-loop
+          const bytes = await renderCertToPdfBytes({
+            plantilla,
+            concurso: concursoSel!,
+            destinatario: { nombre: p.nombre, email: p.email, equipo: p.equipo, puesto: p.puesto },
+          });
+          files.push({ filename: `${sanitize(plantilla.nombre)}_${sanitize(p.nombre)}.pdf`, bytes });
+        }
+      }
+
+      if (sendMode === "equipo_zip" && files.length > 1) {
+        // ZIP
+        const zipBytes = await zipMany(files);
+        const zipB64 = u8ToBase64(zipBytes);
+        const r = await fetch(api("/EnviarZip"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            Correo: toEmail,
+            Nombres: teamName,
+            Equipo: teamName,
+            mensajeCorreo: body,
+            zipBase64: zipB64,
+            filename: `${sanitize(plantilla.nombre)}_${sanitize(teamName)}.zip`,
+            Asunto: subject,
+            FromEmail: emailCfg.fromEmail || undefined,
+            FromName: emailCfg.fromName || undefined,
+          }),
+        });
+        const data = await r.json();
+        const ok = r.ok;
+
+        setCorreoLogs((prev) => [
+          {
+            id: uid(),
+            timestamp: new Date().toISOString(),
+            destinatario: teamName,
+            email: toEmail,
+            plantillaId: plantilla.id,
+            plantillaNombre: plantilla.nombre,
+            concursoId: concursoSel?.id || "",
+            estado: ok ? "enviado" : "error",
+            errorMsg: ok ? undefined : data?.detail || data?.error || "Error al enviar ZIP",
+            payload: { destinatario: destTeam },
+          },
+          ...prev,
+        ]);
+
+        if (!ok) throw new Error(data?.detail || data?.error || "Error al enviar ZIP");
+      } else {
+        // Adjuntos múltiples en un solo correo
+        const attachments = files.map((f) => ({
+          ContentType: "application/pdf",
+          Filename: f.filename,
+          Base64Content: u8ToBase64(f.bytes),
+        }));
+
+        const r = await fetch(api("/EnviarCorreo"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            Correo: toEmail,
+            Nombres: teamName,
+            Equipo: teamName,
+            mensajeCorreo: body, // EXACTO lo que pusiste
+            Asunto: subject,
+            attachments,
+            FromEmail: emailCfg.fromEmail || undefined,
+            FromName: emailCfg.fromName || undefined,
+          }),
+        });
+        const data = await r.json();
+        const ok = r.ok;
+
+        setCorreoLogs((prev) => [
+          {
+            id: uid(),
+            timestamp: new Date().toISOString(),
+            destinatario: teamName,
+            email: toEmail,
+            plantillaId: plantilla.id,
+            plantillaNombre: plantilla.nombre,
+            concursoId: concursoSel?.id || "",
+            estado: ok ? "enviado" : "error",
+            errorMsg: ok ? undefined : data?.detail || data?.error || "Error al enviar correo (equipo-adjuntos)",
+            payload: { destinatario: destTeam },
+          },
+          ...prev,
+        ]);
+
+        if (!ok) throw new Error(data?.detail || data?.error || "Error al enviar correo (equipo-adjuntos)");
+      }
+    } catch (e: any) {
+      setCorreoLogs((prev) => [
+        {
+          id: uid(),
+          timestamp: new Date().toISOString(),
+          destinatario: teamName,
+          email: "",
+          plantillaId: plantilla?.id || "",
+          plantillaNombre: plantilla?.nombre || "",
+          concursoId: concursoSel?.id || "",
+          estado: "error",
+          errorMsg: e.message,
+          payload: { destinatario: { nombre: teamName, equipo: teamName } },
+        },
+        ...prev,
+      ]);
+    }
+  };
+
   const toggleAll = (checked: boolean) => {
     if (!checked) return setSel({});
     const map: Record<string, boolean> = {};
@@ -664,7 +863,7 @@ export default function Constancias() {
               Selecciona una plantilla, elige integrantes del concurso y genera/manda constancias.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 items-center">
             <Button
               variant="outline"
               className="rounded-full bg-white/5 hover:bg-white/10 border-white/60 text-white"
@@ -688,6 +887,19 @@ export default function Constancias() {
             >
               Descargar
             </Button>
+
+            {/* Selector de modo de envío */}
+            <select
+              className="rounded-full border border-white/60 bg-white/5 text-white px-3 py-2 text-sm"
+              value={sendMode}
+              onChange={(e) => setSendMode(e.target.value as SendMode)}
+              title="Modo de envío"
+            >
+              <option value="individual">Modo: Individual</option>
+              <option value="equipo_adjuntos">Modo: Por equipo (adjuntos)</option>
+              <option value="equipo_zip">Modo: Por equipo (ZIP)</option>
+            </select>
+
             <Button
               className="rounded-full bg-white text-[#0b2b55] hover:bg-white/90"
               onClick={() => setConfirmSendOpen(true)}
@@ -844,7 +1056,7 @@ export default function Constancias() {
         )}
       </Card>
 
-      {/* CONFIG EMAIL (compacta) */}
+      {/* CONFIG EMAIL */}
       <Card className="p-4">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-semibold">Configuración de correo</h3>
@@ -852,12 +1064,52 @@ export default function Constancias() {
             Guardar
           </Button>
         </div>
+
         <p className="text-xs text-gray-500 mt-1">
-          Puedes usar tokens (p. ej. <code>{"{{NOMBRE}}"}</code>, <code>{"{{CONCURSO}}"}</code>, <code>{"{{FECHA}}"}</code>).
-          {" "}Arrástralos a los campos de Asunto o Mensaje.
+          Arrastra <strong>tokens</strong> o <strong>valores actuales</strong> al campo de Asunto o Mensaje.
         </p>
 
-        <div className="grid md:grid-cols-2 gap-3 mt-3">
+        {/* Tokens disponibles */}
+        <div className="mt-3">
+          <p className="text-xs text-gray-600 mb-1">Tokens disponibles</p>
+          <div className="flex flex-wrap gap-2">
+            {tokensDisponibles.map((t) => (
+              <span
+                key={t}
+                draggable
+                onDragStart={tokenDragStart(t)}
+                className="inline-flex items-center rounded-full border border-gray-300 bg-white px-3 py-1 text-xs cursor-grab"
+                title="Arrastra para insertar el token"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Valores actuales */}
+        <div className="mt-3">
+          <p className="text-xs text-gray-600 mb-1">Valores actuales (primer seleccionado o primero visible)</p>
+          <div className="flex flex-wrap gap-2">
+            {tokensDisponibles.map((t) => {
+              const val = tokensPreview[t];
+              if (!val) return null;
+              return (
+                <span
+                  key={`val-${t}`}
+                  draggable
+                  onDragStart={valueDragStart(val)}
+                  className="inline-flex items-center rounded-full border border-indigo-300 bg-indigo-50 px-3 py-1 text-xs cursor-grab"
+                  title={`Arrastra para insertar el valor de ${t}`}
+                >
+                  {val}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-3 mt-4">
           <div>
             <label className="text-xs text-gray-600">Remitente (Nombre)</label>
             <input
@@ -892,7 +1144,7 @@ export default function Constancias() {
               ref={bodyRef}
               onDragOver={(e) => e.preventDefault()}
               onDrop={dropInto("bodyTpl")}
-              rows={4}
+              rows={6}
               className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm"
               value={emailCfg.bodyTpl}
               onChange={(e) => setEmailCfg((v) => ({ ...v, bodyTpl: e.target.value }))}
@@ -968,7 +1220,9 @@ export default function Constancias() {
               <Card className="w-full max-w-md p-4">
                 <h3 className="text-base font-semibold">Enviar correos</h3>
                 <p className="text-sm text-gray-600 mt-1">
-                  Se enviarán {seleccionados.length} correos a los seleccionados con la configuración actual.
+                  {sendMode === "individual"
+                    ? `Se enviarán ${seleccionados.length} correos individuales.`
+                    : `Se enviará 1 correo por cada equipo detectado en la selección.`}
                 </p>
                 <div className="mt-4 flex justify-end gap-2">
                   <Button variant="outline" onClick={() => setConfirmSendOpen(false)}>
